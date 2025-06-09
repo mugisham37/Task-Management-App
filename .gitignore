@@ -1,0 +1,73 @@
+# Dependencies
+**/node_modules/
+**/bower_components/
+
+# Build directories
+**/dist/
+**/build/
+**/out/
+**/.next/
+
+# Environment variables
+**/.env
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+
+# Logs
+**/logs/
+**/*.log
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+
+# Testing
+**/coverage/
+**/.nyc_output/
+
+# IDE and editors
+**/.idea/
+**/.vscode/
+**/*.sublime-project
+**/*.sublime-workspace
+**/*.suo
+**/*.ntvs*
+**/*.njsproj
+**/*.sln
+**/*.sw?
+**/.project
+**/.classpath
+**/.settings/
+
+# OS files
+**/.DS_Store
+**/Thumbs.db
+**/ehthumbs.db
+**/Desktop.ini
+**/$RECYCLE.BIN/
+
+# Package files
+**/package-lock.json
+**/yarn.lock
+**/pnpm-lock.yaml
+
+# Cache
+**/.cache/
+**/.eslintcache
+**/.stylelintcache
+**/.parcel-cache
+**/.rts2_cache*/
+**/.rpt2_cache*/
+**/.webpack/
+**/.temp/
+**/.tmp/
+**/temp/
+
+# Misc
+**/uploads/
+**/public/uploads/
+**/.sass-cache/
+**/connect.lock
+**/libpeerconnection.log
+**/typings/
