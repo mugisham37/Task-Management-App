@@ -15,6 +15,11 @@ export interface EnvironmentConfig {
   apiUrl: string;
   frontendUrl: string;
 
+  // API Version
+  apiSupportedVersions?: string;
+  apiDefaultVersion?: string;
+  apiDeprecatedVersions?: string;
+
   // Database
   mongodbUri: string;
 
@@ -42,6 +47,7 @@ export interface EnvironmentConfig {
 
   // Cache
   disableCache: string;
+  disableAuditLog?: string;
 
   // File uploads
   uploadDir: string;
@@ -73,6 +79,11 @@ const environment: EnvironmentConfig = {
     process.env.API_URL ||
     `http://localhost:${process.env.PORT || 3000}/api/${process.env.API_VERSION || 'v1'}`,
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+
+  // API Version
+  apiSupportedVersions: process.env.API_SUPPORTED_VERSIONS || 'v1,v2',
+  apiDefaultVersion: process.env.API_DEFAULT_VERSION || 'v1',
+  apiDeprecatedVersions: process.env.API_DEPRECATED_VERSIONS || '',
 
   // Database
   mongodbUri: process.env.MONGODB_URI || 'mongodb://localhost:27017/task-management',
