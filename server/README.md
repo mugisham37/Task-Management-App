@@ -71,23 +71,27 @@ task-management-api/
 ### Installation
 
 1. Clone the repository:
+
    ```bash
    git clone https://github.com/yourusername/task-management-api.git
    cd task-management-api
    ```
 
 2. Install dependencies:
+
    ```bash
    npm install
    ```
 
 3. Set up environment variables:
+
    ```bash
    cp .env.example .env
    # Edit .env with your configuration
    ```
 
 4. Start the development server:
+
    ```bash
    npm run dev
    ```
@@ -101,6 +105,7 @@ task-management-api/
 ### API Documentation
 
 Once the server is running, you can access the Swagger documentation at:
+
 ```
 http://localhost:3000/api-docs
 ```
@@ -108,11 +113,13 @@ http://localhost:3000/api-docs
 ## Testing
 
 Run tests:
+
 ```bash
 npm test
 ```
 
 Run integration tests:
+
 ```bash
 npm run test:integration
 ```
@@ -120,16 +127,19 @@ npm run test:integration
 ## Code Quality
 
 Run linting:
+
 ```bash
 npm run lint
 ```
 
 Fix linting issues:
+
 ```bash
 npm run lint:fix
 ```
 
 Format code:
+
 ```bash
 npm run format
 ```

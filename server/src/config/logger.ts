@@ -1,7 +1,20 @@
 import winston from 'winston';
 import path from 'path';
 import fs from 'fs';
+import { Request, Response, NextFunction } from 'express';
 import config from './environment';
+
+// Define the structure of the request-scoped logger if not already defined in express.d.ts
+interface RequestScopedLogger {
+  info: (message: string, metadata?: Record<string, unknown>) => void;
+}
+
+// Use the Request interface from express which already has the user and logger properties
+interface ExtendedRequest extends Request {
+  ip: string;
+  method: string;
+  originalUrl: string;
+}
 
 // Create logs directory if it doesn't exist
 const logDir = config.logDir || 'logs';
@@ -65,27 +78,29 @@ export const stream = {
 };
 
 // Add request context middleware
-export const requestLogger = (req: any, res: any, next: any) => {
+export const requestLogger = (req: ExtendedRequest, res: Response, next: NextFunction) => {
   // Generate a unique request ID
-  const requestId = req.headers['x-request-id'] || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
+  const requestId =
+    req.headers['x-request-id'] || `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   // Add request ID to response headers
   res.setHeader('X-Request-ID', requestId);
 
-  // Add request context to all log entries
-  const oldInfo = logger.info;
-  logger.info = (message: any, ...args: any[]) =>
-    oldInfo.apply(logger, [
-      message,
-      {
+  // Create a request-scoped logger
+  const requestScopedLogger: RequestScopedLogger = {
+    info: (message: string, metadata?: Record<string, unknown>) => {
+      return logger.info(message, {
         requestId,
         method: req.method,
         url: req.originalUrl,
         ip: req.ip,
         userId: req.user?.id,
-        ...args[0],
-      },
-    ]);
+        ...(metadata || {}),
+      });
+    },
+  };
+
+  // Attach the request-scoped logger to the request object
+  req.logger = requestScopedLogger;
 
   next();
 };

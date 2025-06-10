@@ -1,7 +1,8 @@
 import mongoose, { Document, Schema } from 'mongoose';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import jwt, { SignOptions, Secret } from 'jsonwebtoken';
 import config from '../config/environment';
+import { JWTExpiresIn } from '../types/jwt.types';
 
 export interface IUser {
   name: string;
@@ -94,8 +95,8 @@ userSchema.pre('save', async function (next) {
     // Hash the password along with the new salt
     this.password = await bcrypt.hash(this.password, salt);
     next();
-  } catch (error: any) {
-    next(error);
+  } catch (error: unknown) {
+    next(error instanceof Error ? error : new Error('Password hashing failed'));
   }
 });
 
@@ -106,16 +107,20 @@ userSchema.methods.comparePassword = async function (password: string): Promise<
 
 // Generate JWT token
 userSchema.methods.generateAuthToken = function (): string {
-  return jwt.sign({ id: this._id, role: this.role }, config.jwtSecret, {
-    expiresIn: config.jwtAccessExpiration,
-  });
+  const payload = { id: this._id, role: this.role };
+  const options: SignOptions = {
+    expiresIn: config.jwtAccessExpiration as JWTExpiresIn,
+  };
+  return jwt.sign(payload, config.jwtSecret as Secret, options);
 };
 
 // Generate refresh token
 userSchema.methods.generateRefreshToken = function (): string {
-  const refreshToken = jwt.sign({ id: this._id }, config.jwtSecret, {
-    expiresIn: config.jwtRefreshExpiration,
-  });
+  const payload = { id: this._id };
+  const options: SignOptions = {
+    expiresIn: config.jwtRefreshExpiration as JWTExpiresIn,
+  };
+  const refreshToken = jwt.sign(payload, config.jwtSecret as Secret, options);
 
   // Save refresh token to user
   this.refreshToken = refreshToken;

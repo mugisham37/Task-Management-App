@@ -1,5 +1,6 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import asyncHandler from '../utils/async-handler';
+import { version } from '../../package.json';
 
 const router = Router();
 
@@ -43,10 +44,7 @@ const router = Router();
  */
 router.get(
   '/',
-  asyncHandler(async (req, res) => {
-    // Get package.json version
-    const { version } = require('../../package.json');
-
+  asyncHandler(async (req: Request, res: Response) => {
     // Check database connection
     const dbStatus = req.app.locals.dbStatus || 'unknown';
 

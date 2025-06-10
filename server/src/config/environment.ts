@@ -4,13 +4,74 @@ import path from 'path';
 // Load environment variables from .env file
 dotenv.config();
 
+/**
+ * Environment configuration interface
+ */
+export interface EnvironmentConfig {
+  // Server
+  nodeEnv: string;
+  port: number;
+  apiVersion: string;
+  apiUrl: string;
+  frontendUrl: string;
+
+  // Database
+  mongodbUri: string;
+
+  // JWT
+  jwtSecret: string;
+  jwtAccessExpiration: string | number;
+  jwtRefreshExpiration: string | number;
+
+  // Email
+  emailService: string;
+  emailUser: string;
+  emailPassword: string;
+  emailFrom: string;
+
+  // Rate limiting
+  rateLimitWindowMs: number;
+  rateLimitMax: number;
+
+  // Logging
+  logLevel: string;
+  logDir: string;
+
+  // Jobs
+  enableJobs: boolean;
+
+  // Cache
+  disableCache: string;
+
+  // File uploads
+  uploadDir: string;
+  maxFileSize: number;
+
+  // Monitoring
+  enableMonitoring: boolean;
+  monitoringInterval: number;
+
+  // Security
+  corsOrigin: string;
+
+  // Redis
+  redisUrl: string;
+  useRedis: boolean;
+
+  // Internationalization
+  defaultLanguage: string;
+  supportedLanguages: string[];
+}
+
 // Environment variables
-const environment = {
+const environment: EnvironmentConfig = {
   // Server
   nodeEnv: process.env.NODE_ENV || 'development',
   port: Number.parseInt(process.env.PORT || '3000', 10),
   apiVersion: process.env.API_VERSION || 'v1',
-  apiUrl: process.env.API_URL || `http://localhost:${process.env.PORT || 3000}/api/${process.env.API_VERSION || 'v1'}`,
+  apiUrl:
+    process.env.API_URL ||
+    `http://localhost:${process.env.PORT || 3000}/api/${process.env.API_VERSION || 'v1'}`,
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
 
   // Database
