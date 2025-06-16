@@ -1,129 +1,88 @@
-// Activity data types for different activity types
-import { WorkspaceSettings } from '../models/workspace.model';
+import { ActivityType } from '../models/activity.model';
+import type { IUser } from '../models/user.model';
+import type { ITask } from '../models/task.model';
 
-// Define a type for custom activity data values
-export type ActivityDataValue =
-  | string
-  | number
-  | boolean
-  | string[]
-  | number[]
-  | Record<string, string | number | boolean | string[] | number[]>
-  | WorkspaceSettings
-  | null
-  | undefined;
-
-export interface ActivityData {
-  // Task related data
-  taskTitle?: string;
-  taskDescription?: string;
-  taskStatus?: string;
-  taskPriority?: string;
-  assignedTo?: string;
-  assignedBy?: string;
-  oldStatus?: string;
-  newStatus?: string;
-  oldPriority?: string;
-  newPriority?: string;
-  oldAssignee?: string;
-  newAssignee?: string;
-  commentText?: string;
-  attachmentName?: string;
-  attachmentUrl?: string;
-  attachmentSize?: number;
-  attachmentType?: string;
-
-  // Project related data
-  projectName?: string;
-  projectDescription?: string;
-  memberName?: string;
-  memberEmail?: string;
-  memberId?: string;
-  role?: string;
-  oldRole?: string;
-  newRole?: string;
-  addedBy?: string;
-  removedBy?: string;
-  updatedBy?: string;
-  updatedFields?: string[];
-  clonedFrom?: string;
-  sourceProjectName?: string;
-  createdFromTemplate?: boolean;
-  templateId?: string;
-  templateName?: string;
-
-  // Workspace related data
-  workspaceName?: string;
-  workspaceDescription?: string;
-  workspaceSettings?: WorkspaceSettings;
-  templateCreated?: boolean;
-  clonedWorkspace?: string;
-  exportFormat?: string;
-  exportSize?: number;
-  invitationEmail?: string;
-  invitationRole?: string;
-  oldOwner?: string;
-  newOwner?: string;
-
-  // Team related data
-  teamName?: string;
-  teamDescription?: string;
-
-  // User related data
-  oldEmail?: string;
-  newEmail?: string;
-  profileFields?: string[];
-  loginMethod?: string;
-  ipAddress?: string;
-  userAgent?: string;
-  deviceInfo?: string;
-
-  // System data
-  notificationTitle?: string;
-  notificationMessage?: string;
-  systemMessage?: string;
-  errorMessage?: string;
-  warningMessage?: string;
-
-  // Bulk operation data
-  updatedCount?: number;
-  totalCount?: number;
-  projectIds?: string[];
-  taskIds?: string[];
-  userIds?: string[];
-
-  // Generic data for custom activities
-  [key: string]: ActivityDataValue;
+// Base interface for common properties
+interface BaseActivityData {
+  timestamp?: Date;
 }
 
-// Activity search options
-export interface ActivitySearchOptions {
-  entityType?: 'task' | 'project' | 'workspace' | 'team';
-  entityId?: string;
+// Task-related activity data
+export interface TaskActivityData extends BaseActivityData {
+  title?: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  dueDate?: Date;
+  assignees?: string[];
+  tags?: string[];
+  previousValues?: Partial<TaskActivityData>;
+}
+
+// Project-related activity data
+export interface ProjectActivityData extends BaseActivityData {
+  name?: string;
+  description?: string;
+  status?: string;
   startDate?: Date;
   endDate?: Date;
-  limit?: number;
-  page?: number;
+  previousValues?: Partial<ProjectActivityData>;
 }
 
-// Activity analytics period
-export type ActivityAnalyticsPeriod = 'day' | 'week' | 'month' | 'year';
-
-// Activity analytics result
-export interface ActivityAnalyticsResult {
-  activityCountByType: Record<string, number>;
-  activityCountByDay: Array<{ date: string; count: number }>;
-  mostActiveProjects: Array<{ project: { _id: string; name: string }; count: number }>;
-  mostActiveTasks: Array<{ task: { _id: string; title: string }; count: number }>;
-  totalActivities: number;
+// Workspace-related activity data
+export interface WorkspaceActivityData extends BaseActivityData {
+  name?: string;
+  description?: string;
+  settings?: Record<string, string | number | boolean>;
+  previousValues?: Partial<WorkspaceActivityData>;
 }
 
-// Activity stats result
-export interface ActivityStatsResult {
-  totalActivities: number;
-  activitiesToday: number;
-  activitiesThisWeek: number;
-  activitiesThisMonth: number;
-  mostActiveDay: string;
-  averageActivitiesPerDay: number;
+// Team-related activity data
+export interface TeamActivityData extends BaseActivityData {
+  name?: string;
+  description?: string;
+  memberIds?: string[];
+  roles?: Record<string, string>;
+  permissions?: string[];
+  previousValues?: Partial<TeamActivityData>;
 }
+
+// Team member activity data
+export interface TeamMemberActivityData extends BaseActivityData {
+  userId?: string;
+  userName?: string;
+  role?: string;
+  previousRole?: string;
+}
+
+// Comment activity data
+export interface CommentActivityData extends BaseActivityData {
+  content?: string;
+  attachments?: string[];
+}
+
+// Discriminated union type for activity data based on activity type
+export type ActivityData =
+  | { type: ActivityType.TASK_CREATED; data: TaskActivityData }
+  | { type: ActivityType.TASK_UPDATED; data: TaskActivityData }
+  | { type: ActivityType.TASK_DELETED; data: TaskActivityData }
+  | { type: ActivityType.TASK_COMPLETED; data: TaskActivityData }
+  | { type: ActivityType.TASK_ASSIGNED; data: TaskActivityData & { assignedTo: IUser['_id'] } }
+  | { type: ActivityType.TASK_COMMENTED; data: CommentActivityData & { taskId: ITask['_id'] } }
+  | { type: ActivityType.PROJECT_CREATED; data: ProjectActivityData }
+  | { type: ActivityType.PROJECT_UPDATED; data: ProjectActivityData }
+  | { type: ActivityType.PROJECT_DELETED; data: ProjectActivityData }
+  | { type: ActivityType.WORKSPACE_CREATED; data: WorkspaceActivityData }
+  | { type: ActivityType.WORKSPACE_UPDATED; data: WorkspaceActivityData }
+  | { type: ActivityType.WORKSPACE_DELETED; data: WorkspaceActivityData }
+  | { type: ActivityType.TEAM_CREATED; data: TeamActivityData }
+  | { type: ActivityType.TEAM_UPDATED; data: TeamActivityData }
+  | { type: ActivityType.TEAM_DELETED; data: TeamActivityData }
+  | { type: ActivityType.TEAM_MEMBER_ADDED; data: TeamMemberActivityData }
+  | { type: ActivityType.TEAM_MEMBER_REMOVED; data: TeamMemberActivityData }
+  | { type: ActivityType.TEAM_MEMBER_ROLE_CHANGED; data: TeamMemberActivityData };
+
+// Type for the data field in IActivity
+export type ActivityDataField = {
+  [K in ActivityType]?: K extends keyof ActivityData ? ActivityData[K]['data'] : never;
+};
