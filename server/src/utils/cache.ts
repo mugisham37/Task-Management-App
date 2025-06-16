@@ -449,6 +449,30 @@ export const del = (key: string): boolean => {
 };
 
 /**
+ * Delete cache keys that match a pattern
+ * @param pattern Regex pattern to match keys
+ * @returns Number of keys deleted
+ */
+export const delByPattern = (pattern: string): number => {
+  const keys = defaultCache.keys();
+  if (keys.length === 0) {
+    return 0;
+  }
+
+  const regex = new RegExp(pattern);
+  let count = 0;
+
+  keys.forEach((key) => {
+    if (regex.test(key)) {
+      defaultCache.del(key);
+      count++;
+    }
+  });
+
+  return count;
+};
+
+/**
  * Check if key exists in cache
  * @param key Cache key
  * @returns true if key exists, false otherwise
@@ -530,6 +554,7 @@ export default {
   get,
   set,
   del,
+  delByPattern,
   has,
   mget,
   mset,

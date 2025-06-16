@@ -118,4 +118,10 @@ export interface TokenResponse {
   expiresIn: number;
 }
 
+/**
+ * JWT expiration time type
+ * Can be a number (in seconds) or a string time span (e.g., '60', '2 days', '10h', '7d')
+ */
+export type JWTExpiresIn = string | number;
+
 // No default export needed for type definitions
