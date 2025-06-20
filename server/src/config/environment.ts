@@ -14,6 +14,7 @@ export interface EnvironmentConfig {
   apiVersion: string;
   apiUrl: string;
   frontendUrl: string;
+  appName: string;
 
   // API Version
   apiSupportedVersions?: string;
@@ -79,6 +80,7 @@ const environment: EnvironmentConfig = {
     process.env.API_URL ||
     `http://localhost:${process.env.PORT || 3000}/api/${process.env.API_VERSION || 'v1'}`,
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  appName: process.env.APP_NAME || 'Task Management App',
 
   // API Version
   apiSupportedVersions: process.env.API_SUPPORTED_VERSIONS || 'v1,v2',
