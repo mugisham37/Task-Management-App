@@ -6,6 +6,25 @@ import { APIFeatures } from '../utils/api-features';
 import * as cache from '../utils/cache';
 import { startTimer } from '../utils/performance-monitor';
 import logger from '../config/logger';
+import { ActivityDataField, ActivityQueryParams, PaginatedResult } from '../types/activity.types';
+
+/**
+ * Type guard to validate if a value is a valid activity result
+ * @param value Value to check
+ * @returns True if value is a valid activity result
+ */
+function isValidActivityResult(value: unknown): value is PaginatedResult<IActivity> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'data' in value &&
+    'total' in value &&
+    'page' in value &&
+    'limit' in value &&
+    'pages' in value &&
+    Array.isArray((value as PaginatedResult<IActivity>).data)
+  );
+}
 
 /**
  * Create a new activity log
@@ -21,7 +40,7 @@ export const createActivity = async (
     project?: mongoose.Types.ObjectId | string;
     workspace?: mongoose.Types.ObjectId | string;
     team?: mongoose.Types.ObjectId | string;
-    data?: Record<string, any>;
+    data?: ActivityDataField;
   },
 ): Promise<IActivity> => {
   const timer = startTimer('activityService.createActivity');
@@ -75,14 +94,8 @@ export const createActivity = async (
  */
 export const getUserActivities = async (
   userId: string,
-  queryParams: Record<string, any> = {},
-): Promise<{
-  data: IActivity[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: ActivityQueryParams = {},
+): Promise<PaginatedResult<IActivity>> => {
   const timer = startTimer('activityService.getUserActivities');
 
   try {
@@ -93,9 +106,9 @@ export const getUserActivities = async (
     const cacheKey = `userActivities:${userId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedActivities = cache.get(cacheKey);
-      if (cachedActivities) {
-        return cachedActivities;
+      const cachedValue = cache.get(cacheKey);
+      if (cachedValue && isValidActivityResult(cachedValue)) {
+        return cachedValue;
       }
     }
 
@@ -155,14 +168,8 @@ export const getUserActivities = async (
  */
 export const getTaskActivities = async (
   taskId: string,
-  queryParams: Record<string, any> = {},
-): Promise<{
-  data: IActivity[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: ActivityQueryParams = {},
+): Promise<PaginatedResult<IActivity>> => {
   const timer = startTimer('activityService.getTaskActivities');
 
   try {
@@ -173,9 +180,9 @@ export const getTaskActivities = async (
     const cacheKey = `taskActivities:${taskId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedActivities = cache.get(cacheKey);
-      if (cachedActivities) {
-        return cachedActivities;
+      const cachedValue = cache.get(cacheKey);
+      if (cachedValue && isValidActivityResult(cachedValue)) {
+        return cachedValue;
       }
     }
 
@@ -214,14 +221,8 @@ export const getTaskActivities = async (
  */
 export const getProjectActivities = async (
   projectId: string,
-  queryParams: Record<string, any> = {},
-): Promise<{
-  data: IActivity[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: ActivityQueryParams = {},
+): Promise<PaginatedResult<IActivity>> => {
   const timer = startTimer('activityService.getProjectActivities');
 
   try {
@@ -232,9 +233,9 @@ export const getProjectActivities = async (
     const cacheKey = `projectActivities:${projectId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedActivities = cache.get(cacheKey);
-      if (cachedActivities) {
-        return cachedActivities;
+      const cachedValue = cache.get(cacheKey);
+      if (cachedValue && isValidActivityResult(cachedValue)) {
+        return cachedValue;
       }
     }
 
@@ -273,14 +274,8 @@ export const getProjectActivities = async (
  */
 export const getTeamActivities = async (
   teamId: string,
-  queryParams: Record<string, any> = {},
-): Promise<{
-  data: IActivity[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: ActivityQueryParams = {},
+): Promise<PaginatedResult<IActivity>> => {
   const timer = startTimer('activityService.getTeamActivities');
 
   try {
@@ -291,9 +286,9 @@ export const getTeamActivities = async (
     const cacheKey = `teamActivities:${teamId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedActivities = cache.get(cacheKey);
-      if (cachedActivities) {
-        return cachedActivities;
+      const cachedValue = cache.get(cacheKey);
+      if (cachedValue && isValidActivityResult(cachedValue)) {
+        return cachedValue;
       }
     }
 
@@ -332,14 +327,8 @@ export const getTeamActivities = async (
  */
 export const getWorkspaceActivities = async (
   workspaceId: string,
-  queryParams: Record<string, any> = {},
-): Promise<{
-  data: IActivity[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: ActivityQueryParams = {},
+): Promise<PaginatedResult<IActivity>> => {
   const timer = startTimer('activityService.getWorkspaceActivities');
 
   try {
@@ -350,9 +339,9 @@ export const getWorkspaceActivities = async (
     const cacheKey = `workspaceActivities:${workspaceId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedActivities = cache.get(cacheKey);
-      if (cachedActivities) {
-        return cachedActivities;
+      const cachedValue = cache.get(cacheKey);
+      if (cachedValue && isValidActivityResult(cachedValue)) {
+        return cachedValue;
       }
     }
 

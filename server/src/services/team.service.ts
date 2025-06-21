@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import Team, { type ITeam, TeamRole } from '../models/team.model';
-import User from '../models/user.model';
+import User, { type IUser } from '../models/user.model';
 import Workspace from '../models/workspace.model';
 import { NotFoundError, ForbiddenError, ValidationError } from '../utils/app-error';
 import { APIFeatures } from '../utils/api-features';
@@ -9,6 +9,37 @@ import { ActivityType } from '../models/activity.model';
 import * as cache from '../utils/cache';
 import { startTimer } from '../utils/performance-monitor';
 import logger from '../config/logger';
+
+// Define types for better type safety
+interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+}
+
+interface TeamMemberResult {
+  id: string;
+  user: IUser;
+  role: TeamRole;
+  joinedAt: Date;
+}
+
+interface TeamStatistics {
+  team: {
+    id: string;
+    name: string;
+    description?: string;
+    memberCount: number;
+  };
+  memberCountByRole: Record<string, number>;
+  projectCount: number;
+  taskCount: number;
+  completedTaskCount: number;
+  completionRate: number;
+  recentActivities: unknown[];
+}
 
 /**
  * Create a new team
@@ -40,10 +71,9 @@ export const createTeam = async (userId: string, teamData: Partial<ITeam>): Prom
     });
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_CREATED,
-      user: userId,
-      team: team._id,
+      team: (team._id as mongoose.Types.ObjectId).toString(),
       data: {
         teamName: team.name,
       },
@@ -69,14 +99,8 @@ export const createTeam = async (userId: string, teamData: Partial<ITeam>): Prom
  */
 export const getTeams = async (
   userId: string,
-  queryParams: Record<string, any>,
-): Promise<{
-  data: ITeam[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: Record<string, string | number>,
+): Promise<PaginatedResult<ITeam>> => {
   const timer = startTimer('teamService.getTeams');
 
   try {
@@ -87,7 +111,7 @@ export const getTeams = async (
     const cacheKey = `userTeams:${userId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedTeams = cache.get(cacheKey);
+      const cachedTeams = cache.get<PaginatedResult<ITeam>>(cacheKey);
       if (cachedTeams) {
         return cachedTeams;
       }
@@ -210,10 +234,9 @@ export const updateTeam = async (
     await team.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_UPDATED,
-      user: userId,
-      team: team._id,
+      team: (team._id as mongoose.Types.ObjectId).toString(),
       data: {
         teamName: team.name,
         updates: Object.keys(updateData),
@@ -267,9 +290,8 @@ export const deleteTeam = async (teamId: string, userId: string): Promise<{ mess
     await Workspace.deleteMany({ team: teamId });
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_DELETED,
-      user: userId,
       data: {
         teamName,
         teamId,
@@ -332,7 +354,7 @@ export const addTeamMember = async (
 
     // Check if user is already a member of the team
     const isAlreadyMember = team.members.some(
-      (member) => member.user.toString() === newMember._id.toString(),
+      (member) => member.user.toString() === (newMember._id as mongoose.Types.ObjectId).toString(),
     );
     if (isAlreadyMember) {
       throw new ValidationError('User is already a member of this team');
@@ -351,7 +373,7 @@ export const addTeamMember = async (
 
     // Add member to team
     team.members.push({
-      user: newMember._id,
+      user: newMember._id as mongoose.Types.ObjectId,
       role,
       joinedAt: new Date(),
     });
@@ -359,10 +381,9 @@ export const addTeamMember = async (
     await team.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_MEMBER_ADDED,
-      user: userId,
-      team: team._id,
+      team: (team._id as mongoose.Types.ObjectId).toString(),
       data: {
         teamName: team.name,
         memberName: newMember.name,
@@ -374,7 +395,7 @@ export const addTeamMember = async (
     // Invalidate cache
     cache.del(`team:${teamId}`);
     cache.delByPattern(`teamMembers:${teamId}`);
-    cache.delByPattern(`userTeams:${newMember._id}`);
+    cache.delByPattern(`userTeams:${(newMember._id as mongoose.Types.ObjectId).toString()}`);
 
     return team;
   } catch (error) {
@@ -438,10 +459,9 @@ export const removeTeamMember = async (
     await team.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_MEMBER_REMOVED,
-      user: userId,
-      team: team._id,
+      team: (team._id as mongoose.Types.ObjectId).toString(),
       data: {
         teamName: team.name,
         memberName: memberUser?.name,
@@ -519,10 +539,9 @@ export const updateTeamMemberRole = async (
     await team.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_MEMBER_ROLE_CHANGED,
-      user: userId,
-      team: team._id,
+      team: (team._id as mongoose.Types.ObjectId).toString(),
       data: {
         teamName: team.name,
         memberName: memberUser?.name,
@@ -551,13 +570,16 @@ export const updateTeamMemberRole = async (
  * @param userId User ID
  * @returns Team members
  */
-export const getTeamMembers = async (teamId: string, userId: string): Promise<any[]> => {
+export const getTeamMembers = async (
+  teamId: string,
+  userId: string,
+): Promise<TeamMemberResult[]> => {
   const timer = startTimer('teamService.getTeamMembers');
 
   try {
     // Try to get from cache
     const cacheKey = `teamMembers:${teamId}`;
-    const cachedMembers = cache.get(cacheKey);
+    const cachedMembers = cache.get<TeamMemberResult[]>(cacheKey);
     if (cachedMembers) {
       return cachedMembers;
     }
@@ -577,9 +599,9 @@ export const getTeamMembers = async (teamId: string, userId: string): Promise<an
     }
 
     // Format members data
-    const members = team.members.map((member) => ({
-      id: member._id,
-      user: member.user,
+    const members: TeamMemberResult[] = team.members.map((member) => ({
+      id: (member._id as mongoose.Types.ObjectId).toString(),
+      user: member.user as IUser,
       role: member.role,
       joinedAt: member.joinedAt,
     }));
@@ -635,10 +657,9 @@ export const leaveTeam = async (teamId: string, userId: string): Promise<{ messa
     await team.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_MEMBER_REMOVED,
-      user: userId,
-      team: team._id,
+      team: (team._id as mongoose.Types.ObjectId).toString(),
       data: {
         teamName: team.name,
         memberName: user?.name,
@@ -710,15 +731,14 @@ export const transferTeamOwnership = async (
     await team.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.TEAM_UPDATED,
-      user: userId,
-      team: team._id,
+      team: (team._id as mongoose.Types.ObjectId).toString(),
       data: {
         teamName: team.name,
         action: 'ownership_transferred',
-        newOwnerName: newOwnerUser?.name,
-        newOwnerEmail: newOwnerUser?.email,
+        memberName: newOwnerUser?.name,
+        memberEmail: newOwnerUser?.email,
       },
     });
 
@@ -742,15 +762,15 @@ export const transferTeamOwnership = async (
  * @param userId User ID
  * @returns Team statistics
  */
-export const getTeamStatistics = async (teamId: string, userId: string): Promise<any> => {
+export const getTeamStatistics = async (
+  teamId: string,
+  userId: string,
+): Promise<TeamStatistics> => {
   const timer = startTimer('teamService.getTeamStatistics');
 
   try {
     // Check if team exists and user is a member
     const team = await getTeamById(teamId, userId);
-
-    // Get team members
-    const members = team.members.map((member) => member.user);
 
     // Get member count by role
     const memberCountByRole = team.members.reduce(
@@ -789,7 +809,7 @@ export const getTeamStatistics = async (teamId: string, userId: string): Promise
 
     return {
       team: {
-        id: team._id,
+        id: (team._id as mongoose.Types.ObjectId).toString(),
         name: team.name,
         description: team.description,
         memberCount: team.members.length,
@@ -823,7 +843,7 @@ export const searchTeamMembers = async (
   teamId: string,
   userId: string,
   query: string,
-): Promise<any[]> => {
+): Promise<TeamMemberResult[]> => {
   const timer = startTimer('teamService.searchTeamMembers');
 
   try {
@@ -847,11 +867,11 @@ export const searchTeamMembers = async (
     }
 
     // Filter out members with null user (didn't match the query)
-    const members = team.members
+    const members: TeamMemberResult[] = team.members
       .filter((member) => member.user)
       .map((member) => ({
-        id: member._id,
-        user: member.user,
+        id: (member._id as mongoose.Types.ObjectId).toString(),
+        user: member.user as IUser,
         role: member.role,
         joinedAt: member.joinedAt,
       }));
@@ -978,11 +998,13 @@ export const getUserTeamRole = async (teamId: string, userId: string): Promise<T
       throw new NotFoundError('Team not found');
     }
 
-    const member = team.members.find((m) => m.user.toString() === userId);
+    // Find the user in the team members
+    const userMember = team.members.find((member) => member.user.toString() === userId);
 
-    return member ? member.role : null;
+    // Return the user's role or null if not a member
+    return userMember ? userMember.role : null;
   } catch (error) {
-    logger.error(`Error getting role for user ${userId} in team ${teamId}:`, error);
+    logger.error(`Error getting user ${userId} role in team ${teamId}:`, error);
     throw error;
   } finally {
     timer.end();

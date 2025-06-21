@@ -37,8 +37,10 @@ export const createNotification = async (
 
     // Send real-time notification if websocket service is available
     try {
+      // Convert MongoDB ObjectId to string for the websocket notification
+      const notificationId = String(notification._id);
       websocketService.sendUserNotification(userId, {
-        id: notification._id,
+        id: notificationId,
         type: notification.type,
         title: notification.title,
         message: notification.message,

@@ -1,4 +1,4 @@
-import mongoose, { type Document, Schema } from 'mongoose';
+import mongoose, { type Document, Schema, Types } from 'mongoose';
 import type { IUser } from './user.model';
 
 // Team role enum
@@ -10,9 +10,20 @@ export enum TeamRole {
 
 // Team member interface
 export interface ITeamMember {
-  user: IUser['_id'];
+  _id?: Types.ObjectId;
+  user: Types.ObjectId | IUser;
   role: TeamRole;
   joinedAt: Date;
+}
+
+// Interface for populated team document
+export interface ITeamPopulated extends Omit<ITeam, 'members'> {
+  members: Array<{
+    _id: Types.ObjectId;
+    user: IUser;
+    role: TeamRole;
+    joinedAt: Date;
+  }>;
 }
 
 // Team document interface

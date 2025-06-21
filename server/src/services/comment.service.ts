@@ -11,17 +11,7 @@ import { NotificationType } from '../models/notification.model';
 import logger from '../config/logger';
 import * as cache from '../utils/cache';
 import { startTimer } from '../utils/performance-monitor';
-
-// Type for attachment
-interface Attachment {
-  filename: string;
-  path: string;
-  mimetype: string;
-  size: number;
-  _id?: Types.ObjectId;
-  uploadedAt?: Date;
-  uploadedBy?: Types.ObjectId;
-}
+import { ActivityDataField, AttachmentDocument, CommentDocument } from '../types';
 
 // Type for task with required _id
 interface TaskWithId extends ITask {
@@ -29,13 +19,6 @@ interface TaskWithId extends ITask {
   user: Types.ObjectId;
   project?: Types.ObjectId;
   assignedTo?: Types.ObjectId;
-}
-
-// Type for comment with required _id
-interface CommentWithId extends IComment {
-  _id: Types.ObjectId;
-  task: Types.ObjectId;
-  user: Types.ObjectId;
 }
 
 // Type for user with required _id
@@ -55,7 +38,7 @@ export const createComment = async (
   taskId: string,
   commentData: {
     content: string;
-    attachments?: Attachment[];
+    attachments?: AttachmentDocument[];
     mentions?: string[];
   },
 ): Promise<IComment> => {
@@ -103,17 +86,28 @@ export const createComment = async (
       mentions: validatedMentions,
     });
 
-    // Create activity log
+    // Get the created comment as a proper document
+    const createdComment = (await Comment.findById(
+      comment._id,
+    ).exec()) as unknown as CommentDocument;
+    if (!createdComment) {
+      throw new Error('Failed to retrieve created comment');
+    }
+
+    // Create activity log with proper typing
+    const activityData: ActivityDataField = {
+      taskTitle: typedTask.title,
+      commentId: createdComment._id.toString(),
+      commentContent:
+        createdComment.content.substring(0, 100) +
+        (createdComment.content.length > 100 ? '...' : ''),
+    };
+
     await activityService.createActivity(userId, {
       type: ActivityType.TASK_COMMENTED,
       task: new Types.ObjectId(taskId),
       project: typedTask.project,
-      data: {
-        taskTitle: typedTask.title,
-        commentId: comment._id.toString(),
-        commentContent:
-          comment.content.substring(0, 100) + (comment.content.length > 100 ? '...' : ''),
-      },
+      data: activityData,
     });
 
     // Create notification for task owner if different from commenter
@@ -124,7 +118,7 @@ export const createComment = async (
         message: `Someone commented on your task "${typedTask.title}"`,
         data: {
           taskId: taskId,
-          commentId: comment._id.toString(),
+          commentId: createdComment._id.toString(),
           commenterId: userId,
         },
       });
@@ -142,7 +136,7 @@ export const createComment = async (
           message: `You were mentioned in a comment on task "${typedTask.title}"`,
           data: {
             taskId: taskId,
-            commentId: comment._id.toString(),
+            commentId: createdComment._id.toString(),
             commenterId: userId,
           },
         });
@@ -152,7 +146,7 @@ export const createComment = async (
     // Invalidate task comments cache
     cache.del(`taskComments:${taskId}`);
 
-    return comment;
+    return createdComment;
   } catch (error) {
     logger.error(`Error creating comment for task ${taskId}:`, error);
     throw error;
@@ -171,7 +165,7 @@ export const createComment = async (
 export const getTaskComments = async (
   taskId: string,
   userId: string,
-  queryParams: Record<string, any> = {},
+  queryParams: Record<string, unknown> = {},
 ): Promise<{
   data: IComment[];
   total: number;
@@ -256,16 +250,15 @@ export const getCommentById = async (commentId: string, userId: string): Promise
 
   try {
     // Find comment by ID
-    const comment = await Comment.findById(commentId).populate('user', 'name email').lean();
+    const comment = (await Comment.findById(commentId)
+      .populate('user', 'name email')
+      .exec()) as unknown as CommentDocument;
     if (!comment) {
       throw new NotFoundError('Comment not found');
     }
 
-    // Cast comment to CommentWithId
-    const typedComment = comment as unknown as CommentWithId;
-
     // Find task to check permissions
-    const task = await Task.findById(typedComment.task).lean();
+    const task = await Task.findById(comment.task).lean();
     if (!task) {
       throw new NotFoundError('Associated task not found');
     }
@@ -281,7 +274,7 @@ export const getCommentById = async (commentId: string, userId: string): Promise
       throw new ForbiddenError('You do not have permission to view this comment');
     }
 
-    return typedComment;
+    return comment;
   } catch (error) {
     logger.error(`Error getting comment ${commentId}:`, error);
     throw error;
@@ -302,7 +295,7 @@ export const updateComment = async (
   userId: string,
   updateData: {
     content?: string;
-    attachments?: Attachment[];
+    attachments?: AttachmentDocument[];
     mentions?: string[];
   },
 ): Promise<IComment> => {
@@ -310,7 +303,7 @@ export const updateComment = async (
 
   try {
     // Find comment by ID
-    const comment = await Comment.findById(commentId).exec();
+    const comment = (await Comment.findById(commentId).exec()) as unknown as CommentDocument;
     if (!comment) {
       throw new NotFoundError('Comment not found');
     }
@@ -358,18 +351,20 @@ export const updateComment = async (
     const task = await Task.findById(comment.task).lean();
     const typedTask = task ? (task as unknown as TaskWithId) : null;
 
-    // Create activity log
+    // Create activity log with proper typing
+    const activityData: ActivityDataField = {
+      taskTitle: typedTask?.title || 'Unknown Task',
+      commentId: comment._id.toString(),
+      action: 'updated',
+      originalContent,
+      newContent: comment.content.substring(0, 100) + (comment.content.length > 100 ? '...' : ''),
+    };
+
     await activityService.createActivity(userId, {
       type: ActivityType.TASK_COMMENTED,
-      task: comment.task,
+      task: comment.task as Types.ObjectId,
       project: typedTask?.project,
-      data: {
-        taskTitle: typedTask?.title || 'Unknown Task',
-        commentId: comment._id.toString(),
-        action: 'updated',
-        originalContent,
-        newContent: comment.content.substring(0, 100) + (comment.content.length > 100 ? '...' : ''),
-      },
+      data: activityData,
     });
 
     // Create notifications for newly mentioned users
@@ -423,7 +418,7 @@ export const deleteComment = async (
 
   try {
     // Find comment by ID
-    const comment = await Comment.findById(commentId).exec();
+    const comment = (await Comment.findById(commentId).exec()) as unknown as CommentDocument;
     if (!comment) {
       throw new NotFoundError('Comment not found');
     }
@@ -451,17 +446,18 @@ export const deleteComment = async (
     // Delete comment
     await comment.deleteOne();
 
-    // Create activity log
+    // Create activity log with proper typing
+    const activityData: ActivityDataField = {
+      taskTitle: typedTask.title,
+      action: 'deleted',
+      commentContent: commentContent.substring(0, 100) + (commentContent.length > 100 ? '...' : ''),
+    };
+
     await activityService.createActivity(userId, {
       type: ActivityType.TASK_COMMENTED,
       task: new Types.ObjectId(typedTask._id.toString()),
       project: typedTask.project,
-      data: {
-        taskTitle: typedTask.title,
-        action: 'deleted',
-        commentContent:
-          commentContent.substring(0, 100) + (commentContent.length > 100 ? '...' : ''),
-      },
+      data: activityData,
     });
 
     // Invalidate task comments cache
@@ -488,13 +484,13 @@ export const deleteComment = async (
 export const addCommentAttachment = async (
   commentId: string,
   userId: string,
-  attachment: Attachment,
+  attachment: AttachmentDocument,
 ): Promise<IComment> => {
   const timer = startTimer('commentService.addCommentAttachment');
 
   try {
     // Find comment by ID
-    const comment = await Comment.findById(commentId).exec();
+    const comment = (await Comment.findById(commentId).exec()) as unknown as CommentDocument;
     if (!comment) {
       throw new NotFoundError('Comment not found');
     }
@@ -505,7 +501,7 @@ export const addCommentAttachment = async (
     }
 
     // Add attachment to comment with _id
-    const attachmentWithId = {
+    const attachmentWithId: AttachmentDocument = {
       ...attachment,
       _id: new Types.ObjectId(),
     };
@@ -517,21 +513,23 @@ export const addCommentAttachment = async (
     const task = await Task.findById(comment.task).lean();
     const typedTask = task ? (task as unknown as TaskWithId) : null;
 
-    // Create activity log
+    // Create activity log with proper typing
+    const activityData: ActivityDataField = {
+      taskTitle: typedTask?.title || 'Unknown Task',
+      commentId: comment._id.toString(),
+      action: 'attachment_added',
+      attachmentDetails: {
+        filename: attachment.filename,
+        size: attachment.size,
+        mimetype: attachment.mimetype,
+      },
+    };
+
     await activityService.createActivity(userId, {
       type: ActivityType.TASK_COMMENTED,
-      task: comment.task,
+      task: comment.task as Types.ObjectId,
       project: typedTask?.project,
-      data: {
-        taskTitle: typedTask?.title || 'Unknown Task',
-        commentId: comment._id.toString(),
-        action: 'attachment_added',
-        attachmentDetails: {
-          filename: attachment.filename,
-          size: attachment.size,
-          mimetype: attachment.mimetype,
-        },
-      },
+      data: activityData,
     });
 
     // Invalidate task comments cache
@@ -562,7 +560,7 @@ export const removeCommentAttachment = async (
 
   try {
     // Find comment by ID
-    const comment = await Comment.findById(commentId).exec();
+    const comment = (await Comment.findById(commentId).exec()) as unknown as CommentDocument;
     if (!comment) {
       throw new NotFoundError('Comment not found');
     }
@@ -597,17 +595,19 @@ export const removeCommentAttachment = async (
     const task = await Task.findById(comment.task).lean();
     const typedTask = task ? (task as unknown as TaskWithId) : null;
 
-    // Create activity log
+    // Create activity log with proper typing
+    const activityData: ActivityDataField = {
+      taskTitle: typedTask?.title || 'Unknown Task',
+      commentId: comment._id.toString(),
+      action: 'attachment_removed',
+      attachmentDetails,
+    };
+
     await activityService.createActivity(userId, {
       type: ActivityType.TASK_COMMENTED,
-      task: comment.task,
+      task: comment.task as Types.ObjectId,
       project: typedTask?.project,
-      data: {
-        taskTitle: typedTask?.title || 'Unknown Task',
-        commentId: comment._id.toString(),
-        action: 'attachment_removed',
-        attachmentDetails,
-      },
+      data: activityData,
     });
 
     // Invalidate task comments cache
@@ -630,7 +630,7 @@ export const removeCommentAttachment = async (
  */
 export const getUserComments = async (
   userId: string,
-  queryParams: Record<string, any> = {},
+  queryParams: Record<string, unknown> = {},
 ): Promise<{
   data: IComment[];
   total: number;

@@ -1,15 +1,44 @@
 import mongoose from 'mongoose';
 import Workspace, { type IWorkspace } from '../models/workspace.model';
-import Team, { TeamRole } from '../models/team.model';
-import Project from '../models/project.model';
-import Task from '../models/task.model';
-import { NotFoundError, ForbiddenError, ValidationError } from '../utils/app-error';
+import Team, { TeamRole, type ITeam } from '../models/team.model';
+import Project, { type IProject } from '../models/project.model';
+import Task, { type ITask } from '../models/task.model';
+import { NotFoundError, ForbiddenError } from '../utils/app-error';
 import { APIFeatures } from '../utils/api-features';
 import { createActivity } from './activity.service';
 import { ActivityType } from '../models/activity.model';
 import * as cache from '../utils/cache';
 import { startTimer } from '../utils/performance-monitor';
 import logger from '../config/logger';
+
+// Define proper return types for paginated results
+interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+}
+
+// Define interface for workspace statistics
+interface WorkspaceStatistics {
+  workspace: {
+    id: mongoose.Types.ObjectId;
+    name: string;
+    description?: string;
+    isPersonal: boolean;
+  };
+  projectCount: number;
+  taskCount: number;
+  tasksByStatus: Record<string, number>;
+  tasksByPriority: Record<string, number>;
+  projects: Array<{
+    id: mongoose.Types.ObjectId;
+    name: string;
+    description?: string;
+  }>;
+  recentActivities: Array<Record<string, any>>;
+}
 
 /**
  * Create a new workspace
@@ -26,19 +55,23 @@ export const createWorkspace = async (
   try {
     // If team is provided, check if user is a member of the team
     if (workspaceData.team) {
-      const team = await Team.findById(workspaceData.team);
+      const team = (await Team.findById(workspaceData.team)) as ITeam | null;
       if (!team) {
         throw new NotFoundError('Team not found');
       }
 
-      const isMember = team.members.some((member) => member.user.toString() === userId);
+      const isMember = team.members.some(
+        (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+      );
       if (!isMember) {
         throw new ForbiddenError('You do not have permission to create a workspace for this team');
       }
 
       // Check if user has admin or owner role in the team
-      const userRole = team.members.find((member) => member.user.toString() === userId)?.role;
-      if (![TeamRole.ADMIN, TeamRole.OWNER].includes(userRole as TeamRole)) {
+      const userMember = team.members.find(
+        (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+      );
+      if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role)) {
         throw new ForbiddenError('Only team administrators and owners can create team workspaces');
       }
     }
@@ -50,11 +83,10 @@ export const createWorkspace = async (
     });
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.WORKSPACE_CREATED,
-      user: userId,
-      workspace: workspace._id,
-      team: workspaceData.team,
+      workspace: workspace._id as mongoose.Types.ObjectId,
+      team: workspaceData.team as string | mongoose.Types.ObjectId | undefined,
       data: {
         workspaceName: workspace.name,
         isPersonal: workspace.isPersonal,
@@ -84,14 +116,8 @@ export const createWorkspace = async (
  */
 export const getWorkspaces = async (
   userId: string,
-  queryParams: Record<string, any>,
-): Promise<{
-  data: IWorkspace[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: Record<string, string>,
+): Promise<PaginatedResult<IWorkspace>> => {
   const timer = startTimer('workspaceService.getWorkspaces');
 
   try {
@@ -102,7 +128,7 @@ export const getWorkspaces = async (
     const cacheKey = `userWorkspaces:${userId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedWorkspaces = cache.get(cacheKey);
+      const cachedWorkspaces = cache.get<PaginatedResult<IWorkspace>>(cacheKey);
       if (cachedWorkspaces) {
         return cachedWorkspaces;
       }
@@ -170,16 +196,18 @@ export const getWorkspaceById = async (
     const cachedWorkspace = cache.get<IWorkspace>(cacheKey);
     if (cachedWorkspace) {
       // Check if user has access to the workspace
-      if (cachedWorkspace.owner.toString() === userId) {
+      if ((cachedWorkspace.owner as mongoose.Types.ObjectId).toString() === userId) {
         return cachedWorkspace;
       } else if (cachedWorkspace.team) {
         // Check if user is a member of the team
-        const team = await Team.findById(cachedWorkspace.team);
+        const team = (await Team.findById(cachedWorkspace.team)) as ITeam | null;
         if (!team) {
           throw new NotFoundError('Team not found');
         }
 
-        const isMember = team.members.some((member) => member.user.toString() === userId);
+        const isMember = team.members.some(
+          (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+        );
         if (!isMember) {
           throw new ForbiddenError('You do not have permission to access this workspace');
         }
@@ -191,7 +219,10 @@ export const getWorkspaceById = async (
     }
 
     // Find workspace by ID
-    const workspace = await Workspace.findById(workspaceId).populate('team', 'name');
+    const workspace = (await Workspace.findById(workspaceId).populate(
+      'team',
+      'name',
+    )) as IWorkspace | null;
 
     // Check if workspace exists
     if (!workspace) {
@@ -199,16 +230,18 @@ export const getWorkspaceById = async (
     }
 
     // Check if user has access to the workspace
-    if (workspace.owner.toString() === userId) {
+    if ((workspace.owner as mongoose.Types.ObjectId).toString() === userId) {
       // User is the owner
     } else if (workspace.team) {
       // Check if user is a member of the team
-      const team = await Team.findById(workspace.team);
+      const team = (await Team.findById(workspace.team)) as ITeam | null;
       if (!team) {
         throw new NotFoundError('Team not found');
       }
 
-      const isMember = team.members.some((member) => member.user.toString() === userId);
+      const isMember = team.members.some(
+        (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+      );
       if (!isMember) {
         throw new ForbiddenError('You do not have permission to access this workspace');
       }
@@ -244,7 +277,7 @@ export const updateWorkspace = async (
 
   try {
     // Find workspace by ID
-    const workspace = await Workspace.findById(workspaceId);
+    const workspace = (await Workspace.findById(workspaceId)) as IWorkspace | null;
 
     // Check if workspace exists
     if (!workspace) {
@@ -252,17 +285,19 @@ export const updateWorkspace = async (
     }
 
     // Check if user has permission to update the workspace
-    if (workspace.owner.toString() === userId) {
+    if ((workspace.owner as mongoose.Types.ObjectId).toString() === userId) {
       // User is the owner
     } else if (workspace.team) {
       // Check if user is an admin or owner of the team
-      const team = await Team.findById(workspace.team);
+      const team = (await Team.findById(workspace.team)) as ITeam | null;
       if (!team) {
         throw new NotFoundError('Team not found');
       }
 
-      const userMember = team.members.find((member) => member.user.toString() === userId);
-      if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role as TeamRole)) {
+      const userMember = team.members.find(
+        (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+      );
+      if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role)) {
         throw new ForbiddenError('You do not have permission to update this workspace');
       }
     } else {
@@ -270,22 +305,21 @@ export const updateWorkspace = async (
     }
 
     // Prevent changing the owner or team
-    delete updateData.owner;
-    delete updateData.team;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { owner, team, ...safeUpdateData } = updateData;
 
     // Update workspace
-    Object.assign(workspace, updateData);
+    Object.assign(workspace, safeUpdateData);
     await workspace.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.WORKSPACE_UPDATED,
-      user: userId,
-      workspace: workspace._id,
-      team: workspace.team,
+      workspace: workspace._id as mongoose.Types.ObjectId,
+      team: workspace.team as string | mongoose.Types.ObjectId | undefined,
       data: {
         workspaceName: workspace.name,
-        updates: Object.keys(updateData),
+        updates: Object.keys(safeUpdateData),
       },
     });
 
@@ -319,7 +353,7 @@ export const deleteWorkspace = async (
 
   try {
     // Find workspace by ID
-    const workspace = await Workspace.findById(workspaceId);
+    const workspace = (await Workspace.findById(workspaceId)) as IWorkspace | null;
 
     // Check if workspace exists
     if (!workspace) {
@@ -327,17 +361,19 @@ export const deleteWorkspace = async (
     }
 
     // Check if user has permission to delete the workspace
-    if (workspace.owner.toString() === userId) {
+    if ((workspace.owner as mongoose.Types.ObjectId).toString() === userId) {
       // User is the owner
     } else if (workspace.team) {
       // Check if user is an admin or owner of the team
-      const team = await Team.findById(workspace.team);
+      const team = (await Team.findById(workspace.team)) as ITeam | null;
       if (!team) {
         throw new NotFoundError('Team not found');
       }
 
-      const userMember = team.members.find((member) => member.user.toString() === userId);
-      if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role as TeamRole)) {
+      const userMember = team.members.find(
+        (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+      );
+      if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role)) {
         throw new ForbiddenError('You do not have permission to delete this workspace');
       }
     } else {
@@ -352,10 +388,9 @@ export const deleteWorkspace = async (
     await workspace.deleteOne();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.WORKSPACE_DELETED,
-      user: userId,
-      team: teamId,
+      team: teamId as string | mongoose.Types.ObjectId | undefined,
       data: {
         workspaceName,
         workspaceId,
@@ -390,14 +425,8 @@ export const deleteWorkspace = async (
 export const getWorkspaceProjects = async (
   workspaceId: string,
   userId: string,
-  queryParams: Record<string, any>,
-): Promise<{
-  data: any[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: Record<string, string>,
+): Promise<PaginatedResult<IProject>> => {
   const timer = startTimer('workspaceService.getWorkspaceProjects');
 
   try {
@@ -411,7 +440,7 @@ export const getWorkspaceProjects = async (
     const cacheKey = `workspaceProjects:${workspaceId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedProjects = cache.get(cacheKey);
+      const cachedProjects = cache.get<PaginatedResult<IProject>>(cacheKey);
       if (cachedProjects) {
         return cachedProjects;
       }
@@ -429,7 +458,7 @@ export const getWorkspaceProjects = async (
       .paginate();
 
     // Execute query with pagination metadata
-    const result = await features.execute();
+    const result = (await features.execute()) as PaginatedResult<IProject>;
 
     // Cache result if no filters
     if (!hasFilters) {
@@ -455,14 +484,8 @@ export const getWorkspaceProjects = async (
 export const getWorkspaceTasks = async (
   workspaceId: string,
   userId: string,
-  queryParams: Record<string, any>,
-): Promise<{
-  data: any[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: Record<string, string>,
+): Promise<PaginatedResult<ITask>> => {
   const timer = startTimer('workspaceService.getWorkspaceTasks');
 
   try {
@@ -476,7 +499,7 @@ export const getWorkspaceTasks = async (
     const cacheKey = `workspaceTasks:${workspaceId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedTasks = cache.get(cacheKey);
+      const cachedTasks = cache.get<PaginatedResult<ITask>>(cacheKey);
       if (cachedTasks) {
         return cachedTasks;
       }
@@ -498,7 +521,7 @@ export const getWorkspaceTasks = async (
       .paginate();
 
     // Execute query with pagination metadata
-    const result = await features.execute();
+    const result = (await features.execute()) as PaginatedResult<ITask>;
 
     // Cache result if no filters
     if (!hasFilters) {
@@ -540,10 +563,9 @@ export const createPersonalWorkspace = async (userId: string): Promise<IWorkspac
     });
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.WORKSPACE_CREATED,
-      user: userId,
-      workspace: workspace._id,
+      workspace: workspace._id as mongoose.Types.ObjectId,
       data: {
         workspaceName: workspace.name,
         isPersonal: true,
@@ -572,24 +594,20 @@ export const createPersonalWorkspace = async (userId: string): Promise<IWorkspac
 export const getTeamWorkspaces = async (
   teamId: string,
   userId: string,
-  queryParams: Record<string, any>,
-): Promise<{
-  data: IWorkspace[];
-  total: number;
-  page: number;
-  limit: number;
-  pages: number;
-}> => {
+  queryParams: Record<string, string>,
+): Promise<PaginatedResult<IWorkspace>> => {
   const timer = startTimer('workspaceService.getTeamWorkspaces');
 
   try {
     // Check if user is a member of the team
-    const team = await Team.findById(teamId);
+    const team = (await Team.findById(teamId)) as ITeam | null;
     if (!team) {
       throw new NotFoundError('Team not found');
     }
 
-    const isMember = team.members.some((member) => member.user.toString() === userId);
+    const isMember = team.members.some(
+      (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+    );
     if (!isMember) {
       throw new ForbiddenError('You do not have permission to access this team');
     }
@@ -601,7 +619,7 @@ export const getTeamWorkspaces = async (
     const cacheKey = `teamWorkspaces:${teamId}:${JSON.stringify(queryParams)}`;
 
     if (!hasFilters) {
-      const cachedWorkspaces = cache.get(cacheKey);
+      const cachedWorkspaces = cache.get<PaginatedResult<IWorkspace>>(cacheKey);
       if (cachedWorkspaces) {
         return cachedWorkspaces;
       }
@@ -619,7 +637,7 @@ export const getTeamWorkspaces = async (
       .paginate();
 
     // Execute query with pagination metadata
-    const result = await features.execute();
+    const result = (await features.execute()) as PaginatedResult<IWorkspace>;
 
     // Cache result if no filters
     if (!hasFilters) {
@@ -646,7 +664,7 @@ export const addProjectToWorkspace = async (
   workspaceId: string,
   projectId: string,
   userId: string,
-): Promise<any> => {
+): Promise<IProject> => {
   const timer = startTimer('workspaceService.addProjectToWorkspace');
 
   try {
@@ -654,12 +672,12 @@ export const addProjectToWorkspace = async (
     const workspace = await getWorkspaceById(workspaceId, userId);
 
     // Check if project exists and belongs to the user
-    const project = await Project.findById(projectId);
+    const project = (await Project.findById(projectId)) as IProject | null;
     if (!project) {
       throw new NotFoundError('Project not found');
     }
 
-    if (project.user.toString() !== userId) {
+    if ((project.user as mongoose.Types.ObjectId).toString() !== userId) {
       throw new ForbiddenError('You do not have permission to update this project');
     }
 
@@ -668,11 +686,10 @@ export const addProjectToWorkspace = async (
     await project.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.PROJECT_UPDATED,
-      user: userId,
-      project: project._id,
-      workspace: workspace._id,
+      project: project._id as mongoose.Types.ObjectId,
+      workspace: workspace._id as mongoose.Types.ObjectId,
       data: {
         projectName: project.name,
         workspaceName: workspace.name,
@@ -704,7 +721,7 @@ export const removeProjectFromWorkspace = async (
   workspaceId: string,
   projectId: string,
   userId: string,
-): Promise<any> => {
+): Promise<IProject> => {
   const timer = startTimer('workspaceService.removeProjectFromWorkspace');
 
   try {
@@ -712,11 +729,11 @@ export const removeProjectFromWorkspace = async (
     const workspace = await getWorkspaceById(workspaceId, userId);
 
     // Check if project exists, belongs to the user, and is in the workspace
-    const project = await Project.findOne({
+    const project = (await Project.findOne({
       _id: projectId,
       user: userId,
       workspace: workspaceId,
-    });
+    })) as IProject | null;
 
     if (!project) {
       throw new NotFoundError('Project not found in this workspace');
@@ -727,11 +744,10 @@ export const removeProjectFromWorkspace = async (
     await project.save();
 
     // Create activity log
-    await createActivity({
+    await createActivity(userId, {
       type: ActivityType.PROJECT_UPDATED,
-      user: userId,
-      project: project._id,
-      workspace: workspace._id,
+      project: project._id as mongoose.Types.ObjectId,
+      workspace: workspace._id as mongoose.Types.ObjectId,
       data: {
         projectName: project.name,
         workspaceName: workspace.name,
@@ -758,7 +774,10 @@ export const removeProjectFromWorkspace = async (
  * @param userId User ID
  * @returns Workspace statistics
  */
-export const getWorkspaceStatistics = async (workspaceId: string, userId: string): Promise<any> => {
+export const getWorkspaceStatistics = async (
+  workspaceId: string,
+  userId: string,
+): Promise<WorkspaceStatistics> => {
   const timer = startTimer('workspaceService.getWorkspaceStatistics');
 
   try {
@@ -767,13 +786,13 @@ export const getWorkspaceStatistics = async (workspaceId: string, userId: string
 
     // Try to get from cache
     const cacheKey = `workspaceStats:${workspaceId}`;
-    const cachedStats = cache.get(cacheKey);
+    const cachedStats = cache.get<WorkspaceStatistics>(cacheKey);
     if (cachedStats) {
       return cachedStats;
     }
 
     // Find projects associated with the workspace
-    const projects = await Project.find({ workspace: workspaceId });
+    const projects = (await Project.find({ workspace: workspaceId })) as IProject[];
     const projectIds = projects.map((project) => project._id);
 
     // Get project count
@@ -788,7 +807,11 @@ export const getWorkspaceStatistics = async (workspaceId: string, userId: string
     const tasksByStatus = await Task.aggregate([
       {
         $match: {
-          project: { $in: projectIds.map((id) => new mongoose.Types.ObjectId(id.toString())) },
+          project: {
+            $in: projectIds.map(
+              (id) => new mongoose.Types.ObjectId((id as mongoose.Types.ObjectId).toString()),
+            ),
+          },
         },
       },
       {
@@ -803,7 +826,11 @@ export const getWorkspaceStatistics = async (workspaceId: string, userId: string
     const tasksByPriority = await Task.aggregate([
       {
         $match: {
-          project: { $in: projectIds.map((id) => new mongoose.Types.ObjectId(id.toString())) },
+          project: {
+            $in: projectIds.map(
+              (id) => new mongoose.Types.ObjectId((id as mongoose.Types.ObjectId).toString()),
+            ),
+          },
         },
       },
       {
@@ -823,25 +850,25 @@ export const getWorkspaceStatistics = async (workspaceId: string, userId: string
       .populate('user', 'name email');
 
     // Format statistics
-    const statistics = {
+    const statistics: WorkspaceStatistics = {
       workspace: {
-        id: workspace._id,
+        id: workspace._id as mongoose.Types.ObjectId,
         name: workspace.name,
         description: workspace.description,
         isPersonal: workspace.isPersonal,
       },
       projectCount,
       taskCount,
-      tasksByStatus: tasksByStatus.reduce((acc, item) => {
+      tasksByStatus: tasksByStatus.reduce((acc: Record<string, number>, item: any) => {
         acc[item._id] = item.count;
         return acc;
       }, {}),
-      tasksByPriority: tasksByPriority.reduce((acc, item) => {
+      tasksByPriority: tasksByPriority.reduce((acc: Record<string, number>, item: any) => {
         acc[item._id] = item.count;
         return acc;
       }, {}),
       projects: projects.map((project) => ({
-        id: project._id,
+        id: project._id as mongoose.Types.ObjectId,
         name: project.name,
         description: project.description,
       })),
@@ -907,29 +934,36 @@ export const hasWorkspaceAccess = async (workspaceId: string, userId: string): P
 
   try {
     // Find workspace
-    const workspace = await Workspace.findById(workspaceId);
+    const workspace: IWorkspace | null = await Workspace.findById(workspaceId);
+
     if (!workspace) {
       return false;
     }
 
     // Check if user is the owner
-    if (workspace.owner.toString() === userId) {
+    if ((workspace.owner as mongoose.Types.ObjectId).toString() === userId) {
       return true;
     }
 
     // Check if workspace belongs to a team and user is a member
     if (workspace.team) {
-      const team = await Team.findById(workspace.team);
+      const team = (await Team.findById(workspace.team)) as ITeam | null;
       if (!team) {
         return false;
       }
 
-      return team.members.some((member) => member.user.toString() === userId);
+      const isMember = team.members.some(
+        (member) => (member.user as mongoose.Types.ObjectId).toString() === userId,
+      );
+      return isMember;
     }
 
     return false;
   } catch (error) {
-    logger.error(`Error checking workspace access for user ${userId}:`, error);
+    logger.error(
+      `Error checking workspace access for user ${userId} and workspace ${workspaceId}:`,
+      error,
+    );
     return false;
   } finally {
     timer.end();

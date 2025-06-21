@@ -2,7 +2,6 @@ import { Types } from 'mongoose';
 import CalendarEvent, {
   type ICalendarEvent,
   type IAttendee,
-  type IReminder,
   EventType,
 } from '../models/calendar-event.model';
 import CalendarIntegration, {
@@ -15,12 +14,7 @@ import User from '../models/user.model';
 import Project from '../models/project.model';
 import Workspace from '../models/workspace.model';
 import Team from '../models/team.model';
-import {
-  NotFoundError,
-  ForbiddenError,
-  ValidationError,
-  ExternalServiceError,
-} from '../utils/app-error';
+import { NotFoundError, ForbiddenError, ValidationError } from '../utils/app-error';
 import { APIFeatures } from '../utils/api-features';
 import * as activityService from './activity.service';
 import * as notificationService from './notification.service';
@@ -29,6 +23,7 @@ import { NotificationType } from '../models/notification.model';
 import logger from '../config/logger';
 import * as cache from '../utils/cache';
 import { startTimer } from '../utils/performance-monitor';
+import { CalendarQueryParams } from '../types/activity.types';
 
 /**
  * Create a new calendar event
@@ -203,7 +198,7 @@ export const createCalendarEvent = async (
  */
 export const getCalendarEvents = async (
   userId: string,
-  queryParams: Record<string, any> = {},
+  queryParams: CalendarQueryParams = {},
 ): Promise<{
   data: ICalendarEvent[];
   total: number;
@@ -1224,6 +1219,9 @@ export const syncEventToExternalCalendars = async (
           },
           location: event.location || '',
         };
+
+        // Log the event data for debugging
+        logger.debug(`Event data prepared for sync:`, eventData);
 
         // Sync based on provider
         switch (integration.provider) {

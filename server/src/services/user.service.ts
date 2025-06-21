@@ -7,6 +7,7 @@ import logger from '../config/logger';
 import * as cache from '../utils/cache';
 import * as activityService from './activity.service';
 import { ActivityType } from '../models/activity.model';
+import { createUserActivityData } from '../utils/activity-helpers';
 
 /**
  * Get user by ID
@@ -113,10 +114,10 @@ export const updateUserProfile = async (
     // Create activity log
     await activityService.createActivity(userId, {
       type: ActivityType.TASK_UPDATED, // Using existing activity type
-      data: {
+      data: createUserActivityData(ActivityType.TASK_UPDATED, {
         action: 'user_profile_updated',
         updates: Object.keys(updateData),
-      },
+      }),
     });
 
     // Return updated profile
@@ -221,7 +222,7 @@ export const getUsersByRole = async (role: UserRole): Promise<Partial<IUser>[]> 
  */
 export const updateUserPreferences = async (
   userId: string,
-  preferences: Record<string, any>,
+  preferences: Record<string, unknown>,
 ): Promise<{ message: string }> => {
   const timer = startTimer('userService.updateUserPreferences');
 
@@ -255,7 +256,7 @@ export const updateUserPreferences = async (
  * @returns Users and pagination metadata
  */
 export const getUsers = async (
-  queryParams: Record<string, any>,
+  queryParams: Record<string, unknown>,
 ): Promise<{
   data: Partial<IUser>[];
   total: number;
@@ -347,12 +348,12 @@ export const deactivateUser = async (
     // Create activity log
     await activityService.createActivity(adminId, {
       type: ActivityType.TASK_UPDATED, // Using existing activity type
-      data: {
+      data: createUserActivityData(ActivityType.TASK_UPDATED, {
         action: 'user_deactivated',
         userId,
         userName: user.name,
         userEmail: user.email,
-      },
+      }),
     });
 
     return { message: 'User deactivated successfully' };
@@ -399,12 +400,12 @@ export const activateUser = async (
     // Create activity log
     await activityService.createActivity(adminId, {
       type: ActivityType.TASK_UPDATED, // Using existing activity type
-      data: {
+      data: createUserActivityData(ActivityType.TASK_UPDATED, {
         action: 'user_activated',
         userId,
         userName: user.name,
         userEmail: user.email,
-      },
+      }),
     });
 
     return { message: 'User activated successfully' };
@@ -453,14 +454,14 @@ export const changeUserRole = async (
     // Create activity log
     await activityService.createActivity(adminId, {
       type: ActivityType.TASK_UPDATED, // Using existing activity type
-      data: {
+      data: createUserActivityData(ActivityType.TASK_UPDATED, {
         action: 'user_role_changed',
         userId,
         userName: user.name,
         userEmail: user.email,
         oldRole: user.role,
         newRole: role,
-      },
+      }),
     });
 
     return { message: `User role changed to ${role} successfully` };
@@ -512,12 +513,12 @@ export const deleteUser = async (userId: string, adminId: string): Promise<{ mes
     // Create activity log
     await activityService.createActivity(adminId, {
       type: ActivityType.TASK_UPDATED, // Using existing activity type
-      data: {
+      data: createUserActivityData(ActivityType.TASK_UPDATED, {
         action: 'user_deleted',
         userId,
         userName,
         userEmail,
-      },
+      }),
     });
 
     return { message: 'User deleted successfully' };
@@ -534,13 +535,41 @@ export const deleteUser = async (userId: string, adminId: string): Promise<{ mes
  * @param userId User ID
  * @returns User dashboard data
  */
-export const getUserDashboardData = async (userId: string): Promise<any> => {
+export const getUserDashboardData = async (
+  userId: string,
+): Promise<{
+  user: {
+    id: mongoose.Types.ObjectId;
+    name: string;
+    email: string;
+  };
+  stats: {
+    tasksTotal: number;
+    tasksCompleted: number;
+    projectsTotal: number;
+    teamsTotal: number;
+  };
+  recentActivity: unknown[];
+}> => {
   const timer = startTimer('userService.getUserDashboardData');
 
   try {
     // Try to get from cache
     const cacheKey = `user:${userId}:dashboard`;
-    const cachedData = cache.get(cacheKey);
+    const cachedData = cache.get<{
+      user: {
+        id: mongoose.Types.ObjectId;
+        name: string;
+        email: string;
+      };
+      stats: {
+        tasksTotal: number;
+        tasksCompleted: number;
+        projectsTotal: number;
+        teamsTotal: number;
+      };
+      recentActivity: unknown[];
+    }>(cacheKey);
     if (cachedData) {
       return cachedData;
     }
@@ -555,7 +584,7 @@ export const getUserDashboardData = async (userId: string): Promise<any> => {
     // This is a placeholder - in a real implementation, you would get data from various services
     const dashboardData = {
       user: {
-        id: user._id,
+        id: user._id as mongoose.Types.ObjectId,
         name: user.name,
         email: user.email,
       },

@@ -14,6 +14,8 @@ export enum ActivityType {
   TASK_COMPLETED = 'task_completed',
   TASK_ASSIGNED = 'task_assigned',
   TASK_COMMENTED = 'task_commented',
+  TASK_ARCHIVED = 'task_archived',
+  TASK_UNARCHIVED = 'task_unarchived',
   PROJECT_CREATED = 'project_created',
   PROJECT_UPDATED = 'project_updated',
   PROJECT_DELETED = 'project_deleted',

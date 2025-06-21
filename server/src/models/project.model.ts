@@ -1,5 +1,6 @@
 import mongoose, { type Document, Schema } from 'mongoose';
 import type { IUser } from './user.model';
+import type { IWorkspace } from './workspace.model';
 
 // Project document interface
 export interface IProject extends Document {
@@ -8,6 +9,7 @@ export interface IProject extends Document {
   color: string;
   isArchived: boolean;
   user: IUser['_id'];
+  workspace?: IWorkspace['_id'];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -42,6 +44,10 @@ const projectSchema = new Schema<IProject>(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: [true, 'Project must belong to a user'],
+    },
+    workspace: {
+      type: Schema.Types.ObjectId,
+      ref: 'Workspace',
     },
   },
   {

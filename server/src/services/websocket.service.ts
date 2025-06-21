@@ -1,6 +1,13 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import logger from '../config/logger';
 import { verifyToken } from './auth.service';
+import type {
+  TaskUpdateData,
+  ProjectUpdateData,
+  WorkspaceUpdateData,
+  NotificationUpdateData,
+  BroadcastData,
+} from '../types/websocket.types';
 
 let io: SocketIOServer;
 
@@ -89,7 +96,10 @@ export const setupWebSocketServer = (socketIo: SocketIOServer): void => {
  * @param userId User ID
  * @param notification Notification data
  */
-export const sendUserNotification = (userId: string, notification: any): void => {
+export const sendUserNotification = (
+  userId: string,
+  notification: NotificationUpdateData,
+): void => {
   if (!io) {
     logger.warn('WebSocket server not initialized');
     return;
@@ -103,7 +113,7 @@ export const sendUserNotification = (userId: string, notification: any): void =>
  * @param projectId Project ID
  * @param taskData Task data
  */
-export const sendTaskUpdate = (projectId: string, taskData: any): void => {
+export const sendTaskUpdate = (projectId: string, taskData: TaskUpdateData): void => {
   if (!io) {
     logger.warn('WebSocket server not initialized');
     return;
@@ -117,7 +127,7 @@ export const sendTaskUpdate = (projectId: string, taskData: any): void => {
  * @param projectId Project ID
  * @param projectData Project data
  */
-export const sendProjectUpdate = (projectId: string, projectData: any): void => {
+export const sendProjectUpdate = (projectId: string, projectData: ProjectUpdateData): void => {
   if (!io) {
     logger.warn('WebSocket server not initialized');
     return;
@@ -131,7 +141,10 @@ export const sendProjectUpdate = (projectId: string, projectData: any): void => 
  * @param workspaceId Workspace ID
  * @param workspaceData Workspace data
  */
-export const sendWorkspaceUpdate = (workspaceId: string, workspaceData: any): void => {
+export const sendWorkspaceUpdate = (
+  workspaceId: string,
+  workspaceData: WorkspaceUpdateData,
+): void => {
   if (!io) {
     logger.warn('WebSocket server not initialized');
     return;
@@ -145,7 +158,7 @@ export const sendWorkspaceUpdate = (workspaceId: string, workspaceData: any): vo
  * @param event Event name
  * @param data Event data
  */
-export const broadcastToAll = (event: string, data: any): void => {
+export const broadcastToAll = (event: string, data: BroadcastData): void => {
   if (!io) {
     logger.warn('WebSocket server not initialized');
     return;

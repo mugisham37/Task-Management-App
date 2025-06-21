@@ -4,6 +4,36 @@ import Project from '../models/project.model';
 import Team from '../models/team.model';
 import Activity from '../models/activity.model';
 import { NotFoundError, ForbiddenError } from '../utils/app-error';
+import { safeDate, toObjectId, isUserTeamMember } from '../utils/mongodb-helpers';
+import {
+  TaskCompletionAnalytics,
+  CompletionRateDataPoint,
+  ProjectAnalytics,
+  MongoQueryCriteria,
+  TeamAnalytics,
+  UserProductivityAnalytics,
+  StreakResult,
+  RecurringTaskAnalytics,
+  TeamActivityItem,
+  RecurringTaskItem,
+  TasksCreatedOverTimeDataPoint,
+} from '../types/analytics.types';
+
+// Define interfaces for Project and Team with owner and members properties
+interface ProjectWithAccess extends mongoose.Document {
+  name: string;
+  description?: string;
+  createdAt: Date;
+  owner?: mongoose.Types.ObjectId;
+  members?: mongoose.Types.ObjectId[];
+}
+
+interface TeamWithAccess extends mongoose.Document {
+  name: string;
+  description?: string;
+  members: import('../models/team.model').ITeamMember[]; // Using proper type
+  owner?: mongoose.Types.ObjectId | string;
+}
 
 /**
  * Get task completion analytics
@@ -18,11 +48,12 @@ export const getTaskCompletionAnalytics = async (
   period: 'day' | 'week' | 'month' | 'year' = 'month',
   startDate?: Date,
   endDate?: Date,
-): Promise<any> => {
+): Promise<TaskCompletionAnalytics> => {
   // Set default date range if not provided
   if (!startDate || !endDate) {
-    endDate = new Date();
-    startDate = new Date();
+    const now = new Date();
+    endDate = now;
+    startDate = new Date(now.getTime()); // Create a new date by passing a timestamp
 
     switch (period) {
       case 'day':
@@ -125,7 +156,7 @@ const getCompletionRateOverTime = async (
   period: 'day' | 'week' | 'month' | 'year',
   startDate: Date,
   endDate: Date,
-): Promise<any[]> => {
+): Promise<CompletionRateDataPoint[]> => {
   let groupByFormat;
   let dateFormat;
 
@@ -224,7 +255,7 @@ const getCompletionRateOverTime = async (
   ]);
 
   // Combine the results
-  const result: any[] = [];
+  const result: CompletionRateDataPoint[] = [];
   const dateMap = new Map();
 
   // Initialize with created tasks
@@ -260,7 +291,10 @@ const getCompletionRateOverTime = async (
 
   // Sort by date
   result.sort((a, b) => {
-    return new Date(a.date).getTime() - new Date(b.date).getTime();
+    // Safely handle potential undefined dates
+    const dateA = typeof a.date === 'string' ? new Date(a.date).getTime() : 0;
+    const dateB = typeof b.date === 'string' ? new Date(b.date).getTime() : 0;
+    return dateA - dateB;
   });
 
   return result;
@@ -289,252 +323,210 @@ const getAverageCompletionTime = async (
     return 0;
   }
 
-  let totalCompletionTime = 0;
-  for (const task of completedTasks) {
-    if (task.completedAt) {
-      const completionTime = task.completedAt.getTime() - task.createdAt.getTime();
-      totalCompletionTime += completionTime;
-    }
-  }
+  // Calculate the average completion time in hours
+  const totalCompletionTime = completedTasks.reduce((total, task) => {
+    const createdAt = new Date(task.createdAt).getTime();
+    // Safely handle potentially undefined completedAt
+    const completedDate = safeDate(task.completedAt);
+    if (!completedDate) return total; // Skip tasks without completion date
+    const completedAt = completedDate.getTime();
+    return total + (completedAt - createdAt);
+  }, 0);
 
-  // Convert to hours
-  return totalCompletionTime / (1000 * 60 * 60) / completedTasks.length;
+  // Convert from milliseconds to hours
+  return totalCompletionTime / completedTasks.length / (1000 * 60 * 60);
 };
 
 /**
  * Get project analytics
- * @param userId User ID
- * @param projectId Project ID (optional)
+ * @param projectId Project ID
+ * @param userId User ID (optional, for authorization)
+ * @param period Period (day, week, month, year)
  * @param startDate Start date
  * @param endDate End date
  * @returns Project analytics
  */
 export const getProjectAnalytics = async (
-  userId: string,
-  projectId?: string,
+  projectId: string,
+  userId?: string,
+  period: 'day' | 'week' | 'month' | 'year' = 'month',
   startDate?: Date,
   endDate?: Date,
-): Promise<any> => {
+): Promise<ProjectAnalytics> => {
   // Set default date range if not provided
   if (!startDate || !endDate) {
-    endDate = new Date();
-    startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 1);
-  }
+    const now = new Date();
+    endDate = now;
+    startDate = new Date(now.getTime()); // Create a new date by passing a timestamp
 
-  // Build match criteria
-  const matchCriteria: any = {
-    user: new mongoose.Types.ObjectId(userId),
-    createdAt: { $lte: endDate },
-  };
-
-  if (projectId) {
-    matchCriteria.project = new mongoose.Types.ObjectId(projectId);
-  }
-
-  // Get tasks by project
-  const tasksByProject = await Task.aggregate([
-    {
-      $match: matchCriteria,
-    },
-    {
-      $group: {
-        _id: '$project',
-        totalTasks: { $sum: 1 },
-        completedTasks: {
-          $sum: {
-            $cond: [{ $eq: ['$status', TaskStatus.DONE] }, 1, 0],
-          },
-        },
-      },
-    },
-    {
-      $lookup: {
-        from: 'projects',
-        localField: '_id',
-        foreignField: '_id',
-        as: 'project',
-      },
-    },
-    {
-      $unwind: {
-        path: '$project',
-        preserveNullAndEmptyArrays: true,
-      },
-    },
-    {
-      $project: {
-        _id: 1,
-        projectName: { $ifNull: ['$project.name', 'No Project'] },
-        totalTasks: 1,
-        completedTasks: 1,
-        completionRate: {
-          $cond: [
-            { $gt: ['$totalTasks', 0] },
-            { $multiply: [{ $divide: ['$completedTasks', '$totalTasks'] }, 100] },
-            0,
-          ],
-        },
-      },
-    },
-  ]);
-
-  // If specific project is requested, get more detailed analytics
-  if (projectId) {
-    // Check if project exists and user has access to it
-    const project = await Project.findById(projectId);
-    if (!project) {
-      throw new NotFoundError('Project not found');
+    switch (period) {
+      case 'day':
+        startDate.setDate(startDate.getDate() - 1);
+        break;
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case 'year':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
     }
+  }
 
-    if (project.user && project.user.toString() !== userId) {
-      throw new ForbiddenError('You do not have permission to access this project');
+  // Get project details
+  const project = await Project.findById(projectId);
+  if (!project) {
+    throw new NotFoundError('Project not found');
+  }
+
+  // Check if user has access to the project
+  if (userId && project) {
+    const isOwner = (project as ProjectWithAccess).owner?.toString() === userId;
+    const userObjectId = toObjectId(userId);
+    const isMember =
+      userObjectId &&
+      (project as ProjectWithAccess).members?.some((memberId) => memberId.equals(userObjectId));
+    if (!isOwner && !isMember) {
+      throw new ForbiddenError('You do not have access to this project');
     }
-
-    // Get tasks by status
-    const tasksByStatus = await Task.aggregate([
-      {
-        $match: {
-          user: new mongoose.Types.ObjectId(userId),
-          project: new mongoose.Types.ObjectId(projectId),
-          createdAt: { $lte: endDate },
-        },
-      },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    // Get tasks by priority
-    const tasksByPriority = await Task.aggregate([
-      {
-        $match: {
-          user: new mongoose.Types.ObjectId(userId),
-          project: new mongoose.Types.ObjectId(projectId),
-          createdAt: { $lte: endDate },
-        },
-      },
-      {
-        $group: {
-          _id: '$priority',
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    // Get tasks created and completed over time
-    const tasksOverTime = await Task.aggregate([
-      {
-        $match: {
-          user: new mongoose.Types.ObjectId(userId),
-          project: new mongoose.Types.ObjectId(projectId),
-          createdAt: { $gte: startDate, $lte: endDate },
-        },
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' },
-            day: { $dayOfMonth: '$createdAt' },
-          },
-          created: { $sum: 1 },
-          completed: {
-            $sum: {
-              $cond: [{ $eq: ['$status', TaskStatus.DONE] }, 1, 0],
-            },
-          },
-          date: { $first: '$createdAt' },
-        },
-      },
-      {
-        $sort: { date: 1 },
-      },
-      {
-        $project: {
-          _id: 0,
-          date: {
-            $dateToString: { format: '%Y-%m-%d', date: '$date' },
-          },
-          created: 1,
-          completed: 1,
-        },
-      },
-    ]);
-
-    return {
-      project: {
-        id: project._id,
-        name: project.name,
-        description: project.description,
-        createdAt: project.createdAt,
-      },
-      tasksByStatus: tasksByStatus.reduce((acc, item) => {
-        acc[item._id] = item.count;
-        return acc;
-      }, {}),
-      tasksByPriority: tasksByPriority.reduce((acc, item) => {
-        acc[item._id] = item.count;
-        return acc;
-      }, {}),
-      tasksOverTime,
-    };
   }
 
-  return {
-    tasksByProject,
-  };
-};
-
-/**
- * Get team analytics
- * @param userId User ID
- * @param teamId Team ID
- * @param startDate Start date
- * @param endDate End date
- * @returns Team analytics
- */
-export const getTeamAnalytics = async (
-  userId: string,
-  teamId: string,
-  startDate?: Date,
-  endDate?: Date,
-): Promise<any> => {
-  // Set default date range if not provided
-  if (!startDate || !endDate) {
-    endDate = new Date();
-    startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 1);
-  }
-
-  // Check if team exists and user is a member
-  const team = await Team.findById(teamId);
-  if (!team) {
-    throw new NotFoundError('Team not found');
-  }
-
-  const isMember = team.members.some((member) => member.user && member.user.toString() === userId);
-  if (!isMember) {
-    throw new ForbiddenError('You do not have permission to access this team');
-  }
-
-  // Get team members
-  const teamMembers = team.members.map((member) => member.user);
-
-  // Get tasks by member
-  const tasksByMember = await Task.aggregate([
+  // Get tasks by status
+  const tasksByStatus = await Task.aggregate([
     {
       $match: {
-        user: { $in: teamMembers },
+        project: new mongoose.Types.ObjectId(projectId),
         createdAt: { $lte: endDate },
       },
     },
     {
       $group: {
+        _id: '$status',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  // Get tasks by priority
+  const tasksByPriority = await Task.aggregate([
+    {
+      $match: {
+        project: new mongoose.Types.ObjectId(projectId),
+        createdAt: { $lte: endDate },
+      },
+    },
+    {
+      $group: {
+        _id: '$priority',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  // Get tasks over time
+  const tasksOverTime = await getTasksOverTime(
+    { project: new mongoose.Types.ObjectId(projectId) },
+    period,
+    startDate,
+    endDate,
+  );
+
+  return {
+    project: {
+      id: project._id ? project._id.toString() : '',
+      name: project.name,
+      description: project.description,
+      createdAt: project.createdAt,
+    },
+    tasksByStatus: tasksByStatus.reduce((acc, item) => {
+      acc[item._id] = item.count;
+      return acc;
+    }, {}),
+    tasksByPriority: tasksByPriority.reduce((acc, item) => {
+      acc[item._id] = item.count;
+      return acc;
+    }, {}),
+    tasksOverTime,
+  };
+};
+
+/**
+ * Get team analytics
+ * @param teamId Team ID
+ * @param userId User ID (for authorization)
+ * @param period Period (day, week, month, year)
+ * @param startDate Start date
+ * @param endDate End date
+ * @returns Team analytics
+ */
+export const getTeamAnalytics = async (
+  teamId: string,
+  userId: string,
+  period: 'day' | 'week' | 'month' | 'year' = 'month',
+  startDate?: Date,
+  endDate?: Date,
+): Promise<TeamAnalytics> => {
+  // Set default date range if not provided
+  if (!startDate || !endDate) {
+    const now = new Date();
+    endDate = now;
+    startDate = new Date(now.getTime()); // Create a new date by passing a timestamp
+
+    switch (period) {
+      case 'day':
+        startDate.setDate(startDate.getDate() - 1);
+        break;
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case 'year':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+    }
+  }
+
+  // Get team details
+  const team = await Team.findById(teamId);
+  if (!team) {
+    throw new NotFoundError('Team not found');
+  }
+
+  // Check if user has access to the team
+  const isOwner = (team as TeamWithAccess).owner?.toString() === userId;
+  const isMember = isUserTeamMember((team as TeamWithAccess).members || [], userId);
+  if (team && !isOwner && !isMember) {
+    throw new ForbiddenError('You do not have access to this team');
+  }
+
+  // Get tasks by member
+  const tasksByMember = await Task.aggregate([
+    {
+      $match: {
+        team: new mongoose.Types.ObjectId(teamId),
+        createdAt: { $lte: endDate },
+      },
+    },
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'user',
+        foreignField: '_id',
+        as: 'userDetails',
+      },
+    },
+    {
+      $unwind: '$userDetails',
+    },
+    {
+      $group: {
         _id: '$user',
+        userName: { $first: '$userDetails.name' },
+        userEmail: { $first: '$userDetails.email' },
         totalTasks: { $sum: 1 },
         completedTasks: {
           $sum: {
@@ -544,21 +536,10 @@ export const getTeamAnalytics = async (
       },
     },
     {
-      $lookup: {
-        from: 'users',
-        localField: '_id',
-        foreignField: '_id',
-        as: 'user',
-      },
-    },
-    {
-      $unwind: '$user',
-    },
-    {
       $project: {
         _id: 1,
-        userName: '$user.name',
-        userEmail: '$user.email',
+        userName: 1,
+        userEmail: 1,
         totalTasks: 1,
         completedTasks: 1,
         completionRate: {
@@ -576,7 +557,7 @@ export const getTeamAnalytics = async (
   const tasksByStatus = await Task.aggregate([
     {
       $match: {
-        user: { $in: teamMembers },
+        team: new mongoose.Types.ObjectId(teamId),
         createdAt: { $lte: endDate },
       },
     },
@@ -592,7 +573,7 @@ export const getTeamAnalytics = async (
   const tasksByPriority = await Task.aggregate([
     {
       $match: {
-        user: { $in: teamMembers },
+        team: new mongoose.Types.ObjectId(teamId),
         createdAt: { $lte: endDate },
       },
     },
@@ -604,98 +585,23 @@ export const getTeamAnalytics = async (
     },
   ]);
 
-  // Get tasks created and completed over time
-  const tasksOverTime = await Task.aggregate([
-    {
-      $match: {
-        user: { $in: teamMembers },
-        createdAt: { $gte: startDate, $lte: endDate },
-      },
-    },
-    {
-      $group: {
-        _id: {
-          year: { $year: '$createdAt' },
-          month: { $month: '$createdAt' },
-          day: { $dayOfMonth: '$createdAt' },
-        },
-        created: { $sum: 1 },
-        completed: {
-          $sum: {
-            $cond: [{ $eq: ['$status', TaskStatus.DONE] }, 1, 0],
-          },
-        },
-        date: { $first: '$createdAt' },
-      },
-    },
-    {
-      $sort: { date: 1 },
-    },
-    {
-      $project: {
-        _id: 0,
-        date: {
-          $dateToString: { format: '%Y-%m-%d', date: '$date' },
-        },
-        created: 1,
-        completed: 1,
-      },
-    },
-  ]);
+  // Get tasks over time
+  const tasksOverTime = await getTasksOverTime(
+    { team: new mongoose.Types.ObjectId(teamId) },
+    period,
+    startDate,
+    endDate,
+  );
 
   // Get team activity
-  const teamActivity = await Activity.aggregate([
-    {
-      $match: {
-        user: { $in: teamMembers },
-        createdAt: { $gte: startDate, $lte: endDate },
-      },
-    },
-    {
-      $group: {
-        _id: {
-          year: { $year: '$createdAt' },
-          month: { $month: '$createdAt' },
-          day: { $dayOfMonth: '$createdAt' },
-          user: '$user',
-        },
-        count: { $sum: 1 },
-        date: { $first: '$createdAt' },
-      },
-    },
-    {
-      $lookup: {
-        from: 'users',
-        localField: '_id.user',
-        foreignField: '_id',
-        as: 'user',
-      },
-    },
-    {
-      $unwind: '$user',
-    },
-    {
-      $project: {
-        _id: 0,
-        date: {
-          $dateToString: { format: '%Y-%m-%d', date: '$date' },
-        },
-        userId: '$_id.user',
-        userName: '$user.name',
-        count: 1,
-      },
-    },
-    {
-      $sort: { date: 1 },
-    },
-  ]);
+  const teamActivity = await getTeamActivity(teamId, period, startDate, endDate);
 
   return {
     team: {
-      id: team._id,
+      id: team._id ? team._id.toString() : '',
       name: team.name,
       description: team.description,
-      memberCount: team.members.length,
+      memberCount: team.members.length + 1, // +1 for the owner
     },
     tasksByMember,
     tasksByStatus: tasksByStatus.reduce((acc, item) => {
@@ -714,20 +620,37 @@ export const getTeamAnalytics = async (
 /**
  * Get user productivity analytics
  * @param userId User ID
+ * @param period Period (day, week, month, year)
  * @param startDate Start date
  * @param endDate End date
  * @returns User productivity analytics
  */
 export const getUserProductivityAnalytics = async (
   userId: string,
+  period: 'day' | 'week' | 'month' | 'year' = 'month',
   startDate?: Date,
   endDate?: Date,
-): Promise<any> => {
+): Promise<UserProductivityAnalytics> => {
   // Set default date range if not provided
   if (!startDate || !endDate) {
-    endDate = new Date();
-    startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 1);
+    const now = new Date();
+    endDate = now;
+    startDate = new Date(now.getTime()); // Create a new date by passing a timestamp
+
+    switch (period) {
+      case 'day':
+        startDate.setDate(startDate.getDate() - 1);
+        break;
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case 'year':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+    }
   }
 
   // Get tasks created and completed in the date range
@@ -761,9 +684,6 @@ export const getUserProductivityAnalytics = async (
       },
     },
     {
-      $sort: { _id: 1 },
-    },
-    {
       $project: {
         _id: 0,
         dayOfWeek: {
@@ -783,6 +703,9 @@ export const getUserProductivityAnalytics = async (
         count: 1,
       },
     },
+    {
+      $sort: { _id: 1 },
+    },
   ]);
 
   // Get productivity by hour of day
@@ -801,28 +724,19 @@ export const getUserProductivityAnalytics = async (
       },
     },
     {
-      $sort: { _id: 1 },
-    },
-    {
       $project: {
         _id: 0,
         hour: '$_id',
         count: 1,
       },
     },
+    {
+      $sort: { hour: 1 },
+    },
   ]);
 
-  // Get task completion streaks
-  const taskCompletionDates = await Task.find(
-    {
-      user: userId,
-      status: TaskStatus.DONE,
-      completedAt: { $gte: startDate, $lte: endDate },
-    },
-    { completedAt: 1 },
-  ).sort({ completedAt: 1 });
-
-  const streaks = calculateStreaks(taskCompletionDates.map((task) => task.completedAt!));
+  // Calculate streaks
+  const streakResult = await calculateStreaks(userId);
 
   return {
     tasksCreated,
@@ -831,143 +745,187 @@ export const getUserProductivityAnalytics = async (
     averageCompletionTime,
     productivityByDayOfWeek,
     productivityByHourOfDay,
-    currentStreak: streaks.currentStreak,
-    longestStreak: streaks.longestStreak,
+    currentStreak: streakResult.currentStreak,
+    longestStreak: streakResult.longestStreak,
   };
-};
-
-/**
- * Calculate streaks from completion dates
- * @param dates Array of completion dates
- * @returns Current and longest streaks
- */
-const calculateStreaks = (dates: Date[]): { currentStreak: number; longestStreak: number } => {
-  if (dates.length === 0) {
-    return { currentStreak: 0, longestStreak: 0 };
-  }
-
-  // Convert dates to day strings (YYYY-MM-DD)
-  const dayStrings = dates.map((date) => date.toISOString().split('T')[0]);
-
-  // Remove duplicates (multiple completions on the same day)
-  const uniqueDays = [...new Set(dayStrings)].sort();
-
-  let currentStreak = 1;
-  let longestStreak = 1;
-
-  for (let i = 1; i < uniqueDays.length; i++) {
-    const currentDay = new Date(uniqueDays[i]);
-    const previousDay = new Date(uniqueDays[i - 1]);
-
-    // Check if days are consecutive
-    previousDay.setDate(previousDay.getDate() + 1);
-    if (
-      previousDay.getFullYear() === currentDay.getFullYear() &&
-      previousDay.getMonth() === currentDay.getMonth() &&
-      previousDay.getDate() === currentDay.getDate()
-    ) {
-      currentStreak++;
-    } else {
-      // Streak broken, check if it was the longest
-      if (currentStreak > longestStreak) {
-        longestStreak = currentStreak;
-      }
-      currentStreak = 1;
-    }
-  }
-
-  // Check if the final streak is the longest
-  if (currentStreak > longestStreak) {
-    longestStreak = currentStreak;
-  }
-
-  // Check if the current streak is still active
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const lastStreakDay = new Date(uniqueDays[uniqueDays.length - 1]);
-  lastStreakDay.setHours(0, 0, 0, 0);
-
-  // If the last day in the streak is before yesterday, the streak is broken
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  yesterday.setHours(0, 0, 0, 0);
-
-  if (lastStreakDay < yesterday) {
-    currentStreak = 0;
-  }
-
-  return { currentStreak, longestStreak };
 };
 
 /**
  * Get recurring task analytics
  * @param userId User ID
+ * @param period Period (day, week, month, year)
  * @param startDate Start date
  * @param endDate End date
  * @returns Recurring task analytics
  */
 export const getRecurringTaskAnalytics = async (
   userId: string,
+  period: 'day' | 'week' | 'month' | 'year' = 'month',
   startDate?: Date,
   endDate?: Date,
-): Promise<any> => {
+): Promise<RecurringTaskAnalytics> => {
   // Set default date range if not provided
   if (!startDate || !endDate) {
-    endDate = new Date();
-    startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 1);
+    const now = new Date();
+    endDate = now;
+    startDate = new Date(now.getTime()); // Create a new date by passing a timestamp
+
+    switch (period) {
+      case 'day':
+        startDate.setDate(startDate.getDate() - 1);
+        break;
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case 'year':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+    }
   }
 
   // Get recurring tasks
-  const recurringTasks = await mongoose.model('RecurringTask').find({
-    user: userId,
-    createdAt: { $lte: endDate },
-  });
-
-  // Get tasks created from recurring tasks
-  const recurringTaskIds = recurringTasks.map((task) => task._id);
-  const tasksFromRecurring = await Task.find({
-    user: userId,
-    recurringTaskId: { $in: recurringTaskIds },
-    createdAt: { $gte: startDate, $lte: endDate },
-  });
-
-  // Get completion rate for recurring tasks
-  const completedTasksFromRecurring = tasksFromRecurring.filter(
-    (task) => task.status === TaskStatus.DONE,
-  );
-  const completionRate =
-    tasksFromRecurring.length > 0
-      ? (completedTasksFromRecurring.length / tasksFromRecurring.length) * 100
-      : 0;
-
-  // Get recurring tasks by frequency
-  const recurringTasksByFrequency = recurringTasks.reduce((acc: Record<string, number>, task) => {
-    const frequency = task.frequency;
-    acc[frequency] = (acc[frequency] || 0) + 1;
-    return acc;
-  }, {});
-
-  // Get recurring tasks by status (active/inactive)
-  const activeRecurringTasks = recurringTasks.filter((task) => task.active).length;
-  const inactiveRecurringTasks = recurringTasks.filter((task) => !task.active).length;
-
-  // Get tasks created from recurring tasks over time
-  const tasksCreatedOverTime = await Task.aggregate([
+  const recurringTasks = (await Task.aggregate([
     {
       $match: {
         user: new mongoose.Types.ObjectId(userId),
-        recurringTaskId: { $in: recurringTaskIds },
-        createdAt: { $gte: startDate, $lte: endDate },
+        isRecurring: true,
       },
     },
     {
       $group: {
         _id: {
-          year: { $year: '$createdAt' },
-          month: { $month: '$createdAt' },
-          day: { $dayOfMonth: '$createdAt' },
+          frequency: '$recurringFrequency',
+          active: '$isActive',
         },
+        count: { $sum: 1 },
+      },
+    },
+  ])) as RecurringTaskItem[];
+
+  // Calculate total, active, and inactive recurring tasks
+  const totalRecurringTasks = recurringTasks.reduce((total, item) => total + item.count, 0);
+  const activeRecurringTasks = recurringTasks
+    .filter((item) => item._id.active)
+    .reduce((total, item) => total + item.count, 0);
+  const inactiveRecurringTasks = totalRecurringTasks - activeRecurringTasks;
+
+  // Get tasks created from recurring tasks
+  const tasksCreatedFromRecurring = await Task.countDocuments({
+    user: userId,
+    parentRecurringTaskId: { $exists: true, $ne: null },
+    createdAt: { $gte: startDate, $lte: endDate },
+  });
+
+  // Get tasks completed from recurring tasks
+  const tasksCompletedFromRecurring = await Task.countDocuments({
+    user: userId,
+    parentRecurringTaskId: { $exists: true, $ne: null },
+    status: TaskStatus.DONE,
+    completedAt: { $gte: startDate, $lte: endDate },
+  });
+
+  // Get recurring tasks by frequency
+  const recurringTasksByFrequency = recurringTasks.reduce<Record<string, number>>(
+    (acc, item) => {
+      const frequency = item._id.frequency || 'unknown';
+      acc[frequency] = (acc[frequency] || 0) + item.count;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
+  // Get tasks created over time
+  const tasksCreatedOverTime = await getTasksCreatedOverTime(
+    {
+      user: new mongoose.Types.ObjectId(userId),
+      parentRecurringTaskId: { $exists: true, $ne: null },
+    },
+    period,
+    startDate,
+    endDate,
+  );
+
+  return {
+    totalRecurringTasks,
+    activeRecurringTasks,
+    inactiveRecurringTasks,
+    tasksCreatedFromRecurring,
+    tasksCompletedFromRecurring,
+    completionRate:
+      tasksCreatedFromRecurring > 0
+        ? (tasksCompletedFromRecurring / tasksCreatedFromRecurring) * 100
+        : 0,
+    recurringTasksByFrequency,
+    tasksCreatedOverTime,
+  };
+};
+
+/**
+ * Helper function to get tasks over time
+ * @param matchCriteria MongoDB match criteria
+ * @param period Period (day, week, month, year)
+ * @param startDate Start date
+ * @param endDate End date
+ * @returns Tasks over time data points
+ */
+const getTasksOverTime = async (
+  matchCriteria: MongoQueryCriteria,
+  period: 'day' | 'week' | 'month' | 'year',
+  startDate: Date,
+  endDate: Date,
+): Promise<import('../types/analytics.types').TasksOverTimeDataPoint[]> => {
+  let groupByFormat;
+  let dateFormat;
+
+  switch (period) {
+    case 'day':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' },
+        hour: { $hour: '$createdAt' },
+      };
+      dateFormat = '%Y-%m-%d %H:00';
+      break;
+    case 'week':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' },
+      };
+      dateFormat = '%Y-%m-%d';
+      break;
+    case 'month':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        week: { $week: '$createdAt' },
+      };
+      dateFormat = '%Y-%m Week %U';
+      break;
+    case 'year':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+      };
+      dateFormat = '%Y-%m';
+      break;
+  }
+
+  // Get tasks created over time
+  const tasksCreatedOverTime = await Task.aggregate([
+    {
+      $match: {
+        ...matchCriteria,
+        createdAt: { $gte: startDate, $lte: endDate },
+      },
+    },
+    {
+      $group: {
+        _id: groupByFormat,
         count: { $sum: 1 },
         date: { $first: '$createdAt' },
       },
@@ -979,21 +937,422 @@ export const getRecurringTaskAnalytics = async (
       $project: {
         _id: 0,
         date: {
-          $dateToString: { format: '%Y-%m-%d', date: '$date' },
+          $dateToString: { format: dateFormat, date: '$date' },
+        },
+        created: '$count',
+      },
+    },
+  ]);
+
+  // Get tasks completed over time
+  const tasksCompletedOverTime = await Task.aggregate([
+    {
+      $match: {
+        ...matchCriteria,
+        status: TaskStatus.DONE,
+        completedAt: { $gte: startDate, $lte: endDate },
+      },
+    },
+    {
+      $group: {
+        _id: groupByFormat,
+        count: { $sum: 1 },
+        date: { $first: '$completedAt' },
+      },
+    },
+    {
+      $sort: { date: 1 },
+    },
+    {
+      $project: {
+        _id: 0,
+        date: {
+          $dateToString: { format: dateFormat, date: '$date' },
+        },
+        completed: '$count',
+      },
+    },
+  ]);
+
+  // Combine the results
+  const result: import('../types/analytics.types').TasksOverTimeDataPoint[] = [];
+  const dateMap = new Map();
+
+  // Initialize with created tasks
+  tasksCreatedOverTime.forEach((item) => {
+    dateMap.set(item.date, {
+      date: item.date,
+      created: item.created,
+      completed: 0,
+    });
+  });
+
+  // Add completed tasks
+  tasksCompletedOverTime.forEach((item) => {
+    if (dateMap.has(item.date)) {
+      const entry = dateMap.get(item.date);
+      entry.completed = item.completed;
+    } else {
+      dateMap.set(item.date, {
+        date: item.date,
+        created: 0,
+        completed: item.completed,
+      });
+    }
+  });
+
+  // Convert map to array
+  dateMap.forEach((value) => {
+    result.push(value);
+  });
+
+  // Sort by date
+  result.sort((a, b) => {
+    // Safely handle potential undefined dates
+    const dateA = a.date ? new Date(a.date).getTime() : 0;
+    const dateB = b.date ? new Date(b.date).getTime() : 0;
+    return dateA - dateB;
+  });
+
+  return result;
+};
+
+/**
+ * Helper function to get tasks created over time
+ * @param matchCriteria MongoDB match criteria
+ * @param period Period (day, week, month, year)
+ * @param startDate Start date
+ * @param endDate End date
+ * @returns Tasks created over time data points
+ */
+const getTasksCreatedOverTime = async (
+  matchCriteria: MongoQueryCriteria,
+  period: 'day' | 'week' | 'month' | 'year',
+  startDate: Date,
+  endDate: Date,
+): Promise<TasksCreatedOverTimeDataPoint[]> => {
+  let groupByFormat;
+  let dateFormat;
+
+  switch (period) {
+    case 'day':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' },
+        hour: { $hour: '$createdAt' },
+      };
+      dateFormat = '%Y-%m-%d %H:00';
+      break;
+    case 'week':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' },
+      };
+      dateFormat = '%Y-%m-%d';
+      break;
+    case 'month':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        week: { $week: '$createdAt' },
+      };
+      dateFormat = '%Y-%m Week %U';
+      break;
+    case 'year':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+      };
+      dateFormat = '%Y-%m';
+      break;
+  }
+
+  // Get tasks created over time
+  const tasksCreatedOverTime = await Task.aggregate([
+    {
+      $match: {
+        ...matchCriteria,
+        createdAt: { $gte: startDate, $lte: endDate },
+      },
+    },
+    {
+      $group: {
+        _id: groupByFormat,
+        count: { $sum: 1 },
+        date: { $first: '$createdAt' },
+      },
+    },
+    {
+      $sort: { date: 1 },
+    },
+    {
+      $project: {
+        _id: 0,
+        date: {
+          $dateToString: { format: dateFormat, date: '$date' },
         },
         count: 1,
       },
     },
   ]);
 
-  return {
-    totalRecurringTasks: recurringTasks.length,
-    activeRecurringTasks,
-    inactiveRecurringTasks,
-    tasksCreatedFromRecurring: tasksFromRecurring.length,
-    tasksCompletedFromRecurring: completedTasksFromRecurring.length,
-    completionRate,
-    recurringTasksByFrequency,
-    tasksCreatedOverTime,
-  };
+  // Sort by date
+  tasksCreatedOverTime.sort((a, b) => {
+    // Safely handle potential undefined dates
+    const dateA = a.date ? new Date(a.date).getTime() : 0;
+    const dateB = b.date ? new Date(b.date).getTime() : 0;
+    return dateA - dateB;
+  });
+
+  return tasksCreatedOverTime;
+};
+
+/**
+ * Helper function to get team activity
+ * @param teamId Team ID
+ * @param period Period (day, week, month, year)
+ * @param startDate Start date
+ * @param endDate End date
+ * @returns Team activity data points
+ */
+const getTeamActivity = async (
+  teamId: string,
+  period: 'day' | 'week' | 'month' | 'year',
+  startDate: Date,
+  endDate: Date,
+): Promise<TeamActivityItem[]> => {
+  let groupByFormat;
+  let dateFormat;
+
+  switch (period) {
+    case 'day':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' },
+        hour: { $hour: '$createdAt' },
+      };
+      dateFormat = '%Y-%m-%d %H:00';
+      break;
+    case 'week':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' },
+      };
+      dateFormat = '%Y-%m-%d';
+      break;
+    case 'month':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        week: { $week: '$createdAt' },
+      };
+      dateFormat = '%Y-%m Week %U';
+      break;
+    case 'year':
+      groupByFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+      };
+      dateFormat = '%Y-%m';
+      break;
+  }
+
+  // Get team activity
+  const teamObjectId = toObjectId(teamId);
+  if (!teamObjectId) {
+    throw new NotFoundError('Invalid team ID format');
+  }
+  const teamActivity = await Activity.aggregate([
+    {
+      $match: {
+        team: teamObjectId,
+        createdAt: { $gte: startDate, $lte: endDate },
+      },
+    },
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'user',
+        foreignField: '_id',
+        as: 'userDetails',
+      },
+    },
+    {
+      $unwind: '$userDetails',
+    },
+    {
+      $group: {
+        _id: {
+          ...groupByFormat,
+          userId: '$user',
+        },
+        userName: { $first: '$userDetails.name' },
+        count: { $sum: 1 },
+        date: { $first: '$createdAt' },
+      },
+    },
+    {
+      $sort: { date: 1 },
+    },
+    {
+      $project: {
+        _id: 0,
+        date: {
+          $dateToString: { format: dateFormat, date: '$date' },
+        },
+        userId: '$_id.userId',
+        userName: 1,
+        count: 1,
+      },
+    },
+  ]);
+
+  return teamActivity;
+};
+
+/**
+ * Calculate user streaks
+ * @param userId User ID
+ * @returns Streak result
+ */
+const calculateStreaks = async (userId: string): Promise<StreakResult> => {
+  // Get all days where the user completed at least one task
+  const completedDays = await Task.aggregate([
+    {
+      $match: {
+        user: new mongoose.Types.ObjectId(userId),
+        status: TaskStatus.DONE,
+        completedAt: { $exists: true, $ne: null },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          year: { $year: '$completedAt' },
+          month: { $month: '$completedAt' },
+          day: { $dayOfMonth: '$completedAt' },
+        },
+        date: { $first: '$completedAt' },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        date: {
+          $dateToString: { format: '%Y-%m-%d', date: '$date' },
+        },
+      },
+    },
+    {
+      $sort: { date: 1 },
+    },
+  ]);
+
+  if (completedDays.length === 0) {
+    return { currentStreak: 0, longestStreak: 0 };
+  }
+
+  // Convert to array of dates
+  const dates = completedDays.map((day) => day.date);
+
+  // Calculate streaks
+  let currentStreak = 0;
+  let longestStreak = 0;
+
+  // Check if today has a completed task
+  const today = new Date();
+  const todayStr = today.toISOString().split('T')[0];
+  const hasCompletedToday = dates.includes(todayStr);
+
+  // Check if yesterday has a completed task
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().split('T')[0];
+  const hasCompletedYesterday = dates.includes(yesterdayStr);
+
+  // If completed today, start counting from today
+  if (hasCompletedToday) {
+    currentStreak = 1;
+  }
+
+  // Sort dates in descending order
+  const sortedDates = [...dates].sort((a, b) => {
+    // Safely handle potential undefined dates
+    const dateA = a ? new Date(a).getTime() : 0;
+    const dateB = b ? new Date(b).getTime() : 0;
+    return dateB - dateA;
+  });
+
+  // Calculate current streak
+  if (hasCompletedToday) {
+    // Start from yesterday (since today is already counted)
+    let currentDate = yesterdayStr;
+    let dayOffset = 1;
+
+    // Count consecutive days
+    while (dates.includes(currentDate)) {
+      currentStreak++;
+      dayOffset++;
+      const prevDate = new Date(today);
+      prevDate.setDate(prevDate.getDate() - dayOffset);
+      currentDate = prevDate.toISOString().split('T')[0];
+    }
+  } else if (hasCompletedYesterday) {
+    // Start from yesterday
+    currentStreak = 1;
+    let currentDate = yesterdayStr;
+    let dayOffset = 2;
+
+    // Count consecutive days
+    while (true) {
+      const prevDate = new Date(today);
+      prevDate.setDate(prevDate.getDate() - dayOffset);
+      currentDate = prevDate.toISOString().split('T')[0];
+
+      if (dates.includes(currentDate)) {
+        currentStreak++;
+        dayOffset++;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Calculate longest streak
+  let tempStreak = 1;
+  for (let i = 1; i < sortedDates.length; i++) {
+    const currentDate = sortedDates[i] ? new Date(sortedDates[i]) : new Date();
+    const prevDate = sortedDates[i - 1] ? new Date(sortedDates[i - 1]) : new Date();
+
+    // Check if dates are consecutive
+    const diffTime = Math.abs(prevDate.getTime() - currentDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 1) {
+      tempStreak++;
+    } else {
+      // Reset streak if days are not consecutive
+      if (tempStreak > longestStreak) {
+        longestStreak = tempStreak;
+      }
+      tempStreak = 1;
+    }
+  }
+
+  // Check if the last streak is the longest
+  if (tempStreak > longestStreak) {
+    longestStreak = tempStreak;
+  }
+
+  // If current streak is longer than the calculated longest streak, update it
+  if (currentStreak > longestStreak) {
+    longestStreak = currentStreak;
+  }
+
+  return { currentStreak, longestStreak };
 };

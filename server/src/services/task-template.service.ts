@@ -3,14 +3,16 @@ import TaskTemplate, { type ITaskTemplate } from '../models/task-template.model'
 import Project from '../models/project.model';
 import Workspace from '../models/workspace.model';
 import Team from '../models/team.model';
-import { NotFoundError, ForbiddenError, ValidationError } from '../utils/app-error';
+import { NotFoundError, ForbiddenError } from '../utils/app-error';
 import { APIFeatures } from '../utils/api-features';
 import * as activityService from './activity.service';
 import * as taskService from './task.service';
 import { ActivityType } from '../models/activity.model';
+import { TaskPriority } from '../models/task.model';
 import logger from '../config/logger';
 import * as cache from '../utils/cache';
 import { startTimer } from '../utils/performance-monitor';
+import { createTemplateActivityData } from '../utils/activity-helpers';
 
 /**
  * Create a new task template
@@ -46,10 +48,13 @@ export const createTaskTemplate = async (
       }
 
       // Check if workspace belongs to user or user is a member of the team
-      if (workspace.owner.toString() !== userId) {
+      if ((workspace.owner as Types.ObjectId).toString() !== userId) {
         if (workspace.team) {
           const team = await Team.findById(workspace.team);
-          if (!team || !team.members.some((member) => member.user.toString() === userId)) {
+          if (
+            !team ||
+            !team.members.some((member) => (member.user as Types.ObjectId).toString() === userId)
+          ) {
             throw new ForbiddenError('You do not have permission to use this workspace');
           }
         } else {
@@ -66,7 +71,7 @@ export const createTaskTemplate = async (
       }
 
       // Check if user is a member of the team
-      if (!team.members.some((member) => member.user.toString() === userId)) {
+      if (!team.members.some((member) => (member.user as Types.ObjectId).toString() === userId)) {
         throw new ForbiddenError('You do not have permission to use this team');
       }
     }
@@ -83,11 +88,11 @@ export const createTaskTemplate = async (
       project: templateData.project as Types.ObjectId,
       workspace: templateData.workspace as Types.ObjectId,
       team: templateData.team as Types.ObjectId,
-      data: {
+      data: createTemplateActivityData(ActivityType.TASK_CREATED, {
         templateName: taskTemplate.name,
         isTemplate: true,
         isPublic: taskTemplate.isPublic,
-      },
+      }),
     });
 
     return taskTemplate;
@@ -283,10 +288,13 @@ export const updateTaskTemplate = async (
       }
 
       // Check if workspace belongs to user or user is a member of the team
-      if (workspace.owner.toString() !== userId) {
+      if ((workspace.owner as Types.ObjectId).toString() !== userId) {
         if (workspace.team) {
           const team = await Team.findById(workspace.team);
-          if (!team || !team.members.some((member) => member.user.toString() === userId)) {
+          if (
+            !team ||
+            !team.members.some((member) => (member.user as Types.ObjectId).toString() === userId)
+          ) {
             throw new ForbiddenError('You do not have permission to use this workspace');
           }
         } else {
@@ -303,7 +311,7 @@ export const updateTaskTemplate = async (
       }
 
       // Check if user is a member of the team
-      if (!team.members.some((member) => member.user.toString() === userId)) {
+      if (!team.members.some((member) => (member.user as Types.ObjectId).toString() === userId)) {
         throw new ForbiddenError('You do not have permission to use this team');
       }
     }
@@ -318,11 +326,11 @@ export const updateTaskTemplate = async (
       project: taskTemplate.project,
       workspace: taskTemplate.workspace,
       team: taskTemplate.team,
-      data: {
+      data: createTemplateActivityData(ActivityType.TASK_UPDATED, {
         templateName: taskTemplate.name,
         isTemplate: true,
         updates: Object.keys(updateData),
-      },
+      }),
     });
 
     // Invalidate cache
@@ -378,10 +386,10 @@ export const deleteTaskTemplate = async (
       project: projectId,
       workspace: workspaceId,
       team: teamId,
-      data: {
+      data: createTemplateActivityData(ActivityType.TASK_DELETED, {
         templateName,
         isTemplate: true,
-      },
+      }),
     });
 
     // Invalidate cache
@@ -434,16 +442,37 @@ export const createTaskFromTemplate = async (
       throw new ForbiddenError('You do not have permission to use this task template');
     }
 
+    // Map checklist items to match IChecklistItem interface if present
+    const checklist = taskTemplate.taskData.checklist
+      ? taskTemplate.taskData.checklist.map((item: { title: string; completed: boolean }) => ({
+          text: item.title, // Map title to text
+          completed: item.completed,
+        }))
+      : undefined;
+
+    // Map attachments to match ITaskAttachment interface if present
+    const attachments = taskTemplate.taskData.attachments
+      ? taskTemplate.taskData.attachments.map(
+          (attachment: { filename: string; path: string; mimetype: string; size: number }) => ({
+            ...attachment,
+            uploadedAt: new Date(),
+            uploadedBy: new Types.ObjectId(userId),
+          }),
+        )
+      : undefined;
+
     // Create task data from the template
     const taskData = {
       ...taskTemplate.taskData,
       title: options.title || taskTemplate.taskData.title,
       description: options.description || taskTemplate.taskData.description,
-      priority: options.priority || taskTemplate.taskData.priority,
+      priority: (options.priority || taskTemplate.taskData.priority) as TaskPriority,
       project: options.project || taskTemplate.project,
       dueDate: options.dueDate,
       assignedTo: options.assignedTo,
       tags: [...(taskTemplate.taskData.tags || []), ...(options.tags || []), 'from-template'],
+      checklist, // Use the mapped checklist
+      attachments, // Use the mapped attachments
     };
 
     // Create the task
@@ -456,13 +485,13 @@ export const createTaskFromTemplate = async (
     // Create activity log
     await activityService.createActivity(userId, {
       type: ActivityType.TASK_CREATED,
-      project: task.project,
-      task: task._id,
-      data: {
+      project: task.project as Types.ObjectId,
+      task: task._id as Types.ObjectId,
+      data: createTemplateActivityData(ActivityType.TASK_CREATED, {
         taskTitle: task.title,
         fromTemplate: true,
         templateName: taskTemplate.name,
-      },
+      }),
     });
 
     return task;
@@ -512,12 +541,12 @@ export const toggleTaskTemplatePublic = async (
       project: taskTemplate.project,
       workspace: taskTemplate.workspace,
       team: taskTemplate.team,
-      data: {
+      data: createTemplateActivityData(ActivityType.TASK_UPDATED, {
         templateName: taskTemplate.name,
         isTemplate: true,
         updates: ['isPublic'],
         isPublic,
-      },
+      }),
     });
 
     // Invalidate cache
@@ -631,12 +660,12 @@ export const cloneTaskTemplate = async (
       project: newTemplate.project,
       workspace: newTemplate.workspace,
       team: newTemplate.team,
-      data: {
+      data: createTemplateActivityData(ActivityType.TASK_CREATED, {
         templateName: newTemplate.name,
         isTemplate: true,
         clonedFrom: sourceTemplate.name,
-        sourceTemplateId: sourceTemplate._id.toString(),
-      },
+        sourceTemplateId: (sourceTemplate._id as Types.ObjectId).toString(),
+      }),
     });
 
     return newTemplate;
@@ -665,14 +694,17 @@ export const checkWorkspaceAccess = async (
   }
 
   // Check if workspace belongs to user
-  if (workspace.owner.toString() === userId) {
+  if ((workspace.owner as Types.ObjectId).toString() === userId) {
     return true;
   }
 
   // Check if workspace belongs to a team and user is a member
   if (workspace.team) {
     const team = await Team.findById(workspace.team);
-    if (team && team.members.some((member) => member.user.toString() === userId)) {
+    if (
+      team &&
+      team.members.some((member) => (member.user as Types.ObjectId).toString() === userId)
+    ) {
       return true;
     }
   }
@@ -694,5 +726,5 @@ export const checkTeamMembership = async (teamId: string, userId: string): Promi
   }
 
   // Check if user is a member of the team
-  return team.members.some((member) => member.user.toString() === userId);
+  return team.members.some((member) => (member.user as Types.ObjectId).toString() === userId);
 };
