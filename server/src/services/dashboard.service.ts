@@ -1,73 +1,113 @@
-import Task from "../models/task.model";
-import Project from "../models/project.model";
-import User from "../models/user.model";
-import Team from "../models/team.model";
-import Workspace from "../models/workspace.model";
-import Feedback from "../models/feedback.model";
-import { cache } from "../utils/cache";
-import logger from "../config/logger";
+import Task from '../models/task.model';
+import Project from '../models/project.model';
+import User from '../models/user.model';
+import Team from '../models/team.model';
+import Workspace from '../models/workspace.model';
+import Feedback from '../models/feedback.model';
+import mongoose from 'mongoose';
+import cache from '../utils/cache';
+import logger from '../config/logger';
+
+// Import all types from the new types file
+import {
+  type DailyDataPoint,
+  SystemOverviewData,
+  UserActivityData,
+  TaskStatisticsData,
+  ProjectStatisticsData,
+  TeamWorkspaceStatisticsData,
+  UserDashboardData,
+  DashboardLayout,
+  WidgetType,
+  type MongoAggregationResult,
+  type MongoStatusGroupResult,
+  type UserWithDashboardLayout,
+  type TaskOverviewData,
+  type TasksByStatusData,
+  type TasksByPriorityData,
+  type ActivityData,
+  type DeadlineData,
+  type ProjectProgressData,
+  type TeamWorkloadData,
+  type ProductivityChartData,
+  type CompletionRateData,
+  type CustomWidgetData,
+  type WidgetDataUnion,
+  type ProjectProgressItem,
+  type TeamWorkloadMember,
+  type TaskAssigneeData,
+  type ProjectTaskData,
+  type TeamMemberData,
+  type WorkspaceProjectData,
+} from '../types/dashboard.types';
 
 // Cache TTL for dashboard data (5 minutes)
 const DASHBOARD_CACHE_TTL = 5 * 60;
 
-/**
- * Dashboard widget type enum
- */
-export enum WidgetType {
-  TASKS_OVERVIEW = 'tasks_overview',
-  TASKS_BY_STATUS = 'tasks_by_status',
-  TASKS_BY_PRIORITY = 'tasks_by_priority',
-  RECENT_ACTIVITY = 'recent_activity',
-  UPCOMING_DEADLINES = 'upcoming_deadlines',
-  PROJECT_PROGRESS = 'project_progress',
-  TEAM_WORKLOAD = 'team_workload',
-  PRODUCTIVITY_CHART = 'productivity_chart',
-  COMPLETION_RATE = 'completion_rate',
-  CUSTOM = 'custom',
-}
+// Re-export types for external use
+export {
+  WidgetType,
+  DashboardLayout,
+  SystemOverviewData,
+  UserActivityData,
+  TaskStatisticsData,
+  ProjectStatisticsData,
+  TeamWorkspaceStatisticsData,
+  UserDashboardData,
+};
 
 /**
- * Dashboard layout interface
+ * Format daily data for charts
+ * @param data Aggregated data from MongoDB
+ * @param days Number of days to format
+ * @returns Formatted daily data
  */
-export interface DashboardLayout {
-  columns: number;
-  widgets: {
-    id: string;
-    type: WidgetType;
-    title: string;
-    size: 'small' | 'medium' | 'large';
-    position: {
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-    };
-    settings?: Record<string, any>;
-  }[];
-}
+const formatDailyData = (data: MongoAggregationResult[], days: number): DailyDataPoint[] => {
+  const result: DailyDataPoint[] = [];
+  const today = new Date();
+
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    date.setHours(0, 0, 0, 0);
+
+    const dayData = data.find((item) => {
+      const itemDate = new Date(item._id.year, item._id.month - 1, item._id.day);
+      return itemDate.getTime() === date.getTime();
+    });
+
+    result.push({
+      date: date.toISOString().split('T')[0],
+      count: dayData ? dayData.count : 0,
+    });
+  }
+
+  return result;
+};
 
 /**
  * Get system overview statistics
  * @returns System overview statistics
  */
-export const getSystemOverview = async (): Promise<any> => {
+export const getSystemOverview = async (): Promise<SystemOverviewData> => {
   // Try to get from cache
-  const cacheKey = "dashboard:system-overview";
-  const cachedData = cache.get(cacheKey);
+  const cacheKey = 'dashboard:system-overview';
+  const cachedData = cache.get(cacheKey) as SystemOverviewData | null;
   if (cachedData) {
     return cachedData;
   }
 
   try {
     // Get counts
-    const [userCount, taskCount, projectCount, teamCount, workspaceCount, feedbackCount] = await Promise.all([
-      User.countDocuments(),
-      Task.countDocuments(),
-      Project.countDocuments(),
-      Team.countDocuments(),
-      Workspace.countDocuments(),
-      Feedback.countDocuments(),
-    ]);
+    const [userCount, taskCount, projectCount, teamCount, workspaceCount, feedbackCount] =
+      await Promise.all([
+        User.countDocuments(),
+        Task.countDocuments(),
+        Project.countDocuments(),
+        Team.countDocuments(),
+        Workspace.countDocuments(),
+        Feedback.countDocuments(),
+      ]);
 
     // Get active users (users who have logged in within the last 30 days)
     const thirtyDaysAgo = new Date();
@@ -77,27 +117,27 @@ export const getSystemOverview = async (): Promise<any> => {
     });
 
     // Get tasks by status
-    const tasksByStatus = await Task.aggregate([
+    const tasksByStatus = await Task.aggregate<MongoStatusGroupResult>([
       {
         $group: {
-          _id: "$status",
+          _id: '$status',
           count: { $sum: 1 },
         },
       },
     ]);
 
     // Get tasks by priority
-    const tasksByPriority = await Task.aggregate([
+    const tasksByPriority = await Task.aggregate<MongoStatusGroupResult>([
       {
         $group: {
-          _id: "$priority",
+          _id: '$priority',
           count: { $sum: 1 },
         },
       },
     ]);
 
     // Format data
-    const result = {
+    const result: SystemOverviewData = {
       counts: {
         users: userCount,
         activeUsers: activeUserCount,
@@ -107,14 +147,20 @@ export const getSystemOverview = async (): Promise<any> => {
         workspaces: workspaceCount,
         feedback: feedbackCount,
       },
-      tasksByStatus: tasksByStatus.reduce((acc, item) => {
-        acc[item._id] = item.count;
-        return acc;
-      }, {}),
-      tasksByPriority: tasksByPriority.reduce((acc, item) => {
-        acc[item._id] = item.count;
-        return acc;
-      }, {}),
+      tasksByStatus: tasksByStatus.reduce(
+        (acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+      tasksByPriority: tasksByPriority.reduce(
+        (acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
       lastUpdated: new Date(),
     };
 
@@ -123,7 +169,7 @@ export const getSystemOverview = async (): Promise<any> => {
 
     return result;
   } catch (error) {
-    logger.error("Error getting system overview:", error);
+    logger.error('Error getting system overview:', error);
     throw error;
   }
 };
@@ -133,10 +179,10 @@ export const getSystemOverview = async (): Promise<any> => {
  * @param days Number of days to look back
  * @returns User activity statistics
  */
-export const getUserActivity = async (days = 30): Promise<any> => {
+export const getUserActivity = async (days = 30): Promise<UserActivityData> => {
   // Try to get from cache
   const cacheKey = `dashboard:user-activity:${days}`;
-  const cachedData = cache.get(cacheKey);
+  const cachedData = cache.get(cacheKey) as UserActivityData | null;
   if (cachedData) {
     return cachedData;
   }
@@ -148,7 +194,7 @@ export const getUserActivity = async (days = 30): Promise<any> => {
     startDate.setHours(0, 0, 0, 0);
 
     // Get new user registrations by day
-    const newUsersByDay = await User.aggregate([
+    const newUsersByDay = await User.aggregate<MongoAggregationResult>([
       {
         $match: {
           createdAt: { $gte: startDate },
@@ -157,24 +203,24 @@ export const getUserActivity = async (days = 30): Promise<any> => {
       {
         $group: {
           _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" },
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' },
           },
           count: { $sum: 1 },
         },
       },
       {
         $sort: {
-          "_id.year": 1,
-          "_id.month": 1,
-          "_id.day": 1,
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.day': 1,
         },
       },
     ]);
 
     // Get user logins by day
-    const loginsByDay = await User.aggregate([
+    const loginsByDay = await User.aggregate<MongoAggregationResult>([
       {
         $match: {
           lastLoginAt: { $gte: startDate },
@@ -183,24 +229,24 @@ export const getUserActivity = async (days = 30): Promise<any> => {
       {
         $group: {
           _id: {
-            year: { $year: "$lastLoginAt" },
-            month: { $month: "$lastLoginAt" },
-            day: { $dayOfMonth: "$lastLoginAt" },
+            year: { $year: '$lastLoginAt' },
+            month: { $month: '$lastLoginAt' },
+            day: { $dayOfMonth: '$lastLoginAt' },
           },
           count: { $sum: 1 },
         },
       },
       {
         $sort: {
-          "_id.year": 1,
-          "_id.month": 1,
-          "_id.day": 1,
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.day': 1,
         },
       },
     ]);
 
     // Format data
-    const result = {
+    const result: UserActivityData = {
       newUsers: formatDailyData(newUsersByDay, days),
       logins: formatDailyData(loginsByDay, days),
       lastUpdated: new Date(),
@@ -211,7 +257,7 @@ export const getUserActivity = async (days = 30): Promise<any> => {
 
     return result;
   } catch (error) {
-    logger.error("Error getting user activity:", error);
+    logger.error('Error getting user activity:', error);
     throw error;
   }
 };
@@ -221,10 +267,10 @@ export const getUserActivity = async (days = 30): Promise<any> => {
  * @param days Number of days to look back
  * @returns Task statistics
  */
-export const getTaskStatistics = async (days = 30): Promise<any> => {
+export const getTaskStatistics = async (days = 30): Promise<TaskStatisticsData> => {
   // Try to get from cache
   const cacheKey = `dashboard:task-statistics:${days}`;
-  const cachedData = cache.get(cacheKey);
+  const cachedData = cache.get(cacheKey) as TaskStatisticsData | null;
   if (cachedData) {
     return cachedData;
   }
@@ -236,7 +282,7 @@ export const getTaskStatistics = async (days = 30): Promise<any> => {
     startDate.setHours(0, 0, 0, 0);
 
     // Get new tasks by day
-    const newTasksByDay = await Task.aggregate([
+    const newTasksByDay = await Task.aggregate<MongoAggregationResult>([
       {
         $match: {
           createdAt: { $gte: startDate },
@@ -245,54 +291,54 @@ export const getTaskStatistics = async (days = 30): Promise<any> => {
       {
         $group: {
           _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" },
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' },
           },
           count: { $sum: 1 },
         },
       },
       {
         $sort: {
-          "_id.year": 1,
-          "_id.month": 1,
-          "_id.day": 1,
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.day': 1,
         },
       },
     ]);
 
     // Get completed tasks by day
-    const completedTasksByDay = await Task.aggregate([
+    const completedTasksByDay = await Task.aggregate<MongoAggregationResult>([
       {
         $match: {
-          status: "done",
+          status: 'done',
           completedAt: { $gte: startDate },
         },
       },
       {
         $group: {
           _id: {
-            year: { $year: "$completedAt" },
-            month: { $month: "$completedAt" },
-            day: { $dayOfMonth: "$completedAt" },
+            year: { $year: '$completedAt' },
+            month: { $month: '$completedAt' },
+            day: { $dayOfMonth: '$completedAt' },
           },
           count: { $sum: 1 },
         },
       },
       {
         $sort: {
-          "_id.year": 1,
-          "_id.month": 1,
-          "_id.day": 1,
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.day': 1,
         },
       },
     ]);
 
     // Get average task completion time
-    const avgCompletionTime = await Task.aggregate([
+    const avgCompletionTime = await Task.aggregate<{ _id: null; avgTime: number }>([
       {
         $match: {
-          status: "done",
+          status: 'done',
           completedAt: { $gte: startDate },
           createdAt: { $gte: startDate },
         },
@@ -300,20 +346,20 @@ export const getTaskStatistics = async (days = 30): Promise<any> => {
       {
         $project: {
           completionTime: {
-            $subtract: ["$completedAt", "$createdAt"],
+            $subtract: ['$completedAt', '$createdAt'],
           },
         },
       },
       {
         $group: {
           _id: null,
-          avgTime: { $avg: "$completionTime" },
+          avgTime: { $avg: '$completionTime' },
         },
       },
     ]);
 
     // Get tasks by assignee
-    const tasksByAssignee = await Task.aggregate([
+    const tasksByAssignee = await Task.aggregate<TaskAssigneeData>([
       {
         $match: {
           assignedTo: { $exists: true, $ne: null },
@@ -322,7 +368,7 @@ export const getTaskStatistics = async (days = 30): Promise<any> => {
       },
       {
         $group: {
-          _id: "$assignedTo",
+          _id: '$assignedTo',
           count: { $sum: 1 },
         },
       },
@@ -336,30 +382,31 @@ export const getTaskStatistics = async (days = 30): Promise<any> => {
       },
       {
         $lookup: {
-          from: "users",
-          localField: "_id",
-          foreignField: "_id",
-          as: "user",
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'user',
         },
       },
       {
-        $unwind: "$user",
+        $unwind: '$user',
       },
       {
         $project: {
           _id: 1,
           count: 1,
-          name: "$user.name",
-          email: "$user.email",
+          name: '$user.name',
+          email: '$user.email',
         },
       },
     ]);
 
     // Format data
-    const result = {
+    const result: TaskStatisticsData = {
       newTasks: formatDailyData(newTasksByDay, days),
       completedTasks: formatDailyData(completedTasksByDay, days),
-      avgCompletionTime: avgCompletionTime.length > 0 ? avgCompletionTime[0].avgTime / (1000 * 60 * 60) : 0, // Convert to hours
+      avgCompletionTime:
+        avgCompletionTime.length > 0 ? avgCompletionTime[0].avgTime / (1000 * 60 * 60) : 0, // Convert to hours
       tasksByAssignee: tasksByAssignee,
       lastUpdated: new Date(),
     };
@@ -369,7 +416,7 @@ export const getTaskStatistics = async (days = 30): Promise<any> => {
 
     return result;
   } catch (error) {
-    logger.error("Error getting task statistics:", error);
+    logger.error('Error getting task statistics:', error);
     throw error;
   }
 };
@@ -379,10 +426,10 @@ export const getTaskStatistics = async (days = 30): Promise<any> => {
  * @param days Number of days to look back
  * @returns Project statistics
  */
-export const getProjectStatistics = async (days = 30): Promise<any> => {
+export const getProjectStatistics = async (days = 30): Promise<ProjectStatisticsData> => {
   // Try to get from cache
   const cacheKey = `dashboard:project-statistics:${days}`;
-  const cachedData = cache.get(cacheKey);
+  const cachedData = cache.get(cacheKey) as ProjectStatisticsData | null;
   if (cachedData) {
     return cachedData;
   }
@@ -394,7 +441,7 @@ export const getProjectStatistics = async (days = 30): Promise<any> => {
     startDate.setHours(0, 0, 0, 0);
 
     // Get new projects by day
-    const newProjectsByDay = await Project.aggregate([
+    const newProjectsByDay = await Project.aggregate<MongoAggregationResult>([
       {
         $match: {
           createdAt: { $gte: startDate },
@@ -403,34 +450,34 @@ export const getProjectStatistics = async (days = 30): Promise<any> => {
       {
         $group: {
           _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" },
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' },
           },
           count: { $sum: 1 },
         },
       },
       {
         $sort: {
-          "_id.year": 1,
-          "_id.month": 1,
-          "_id.day": 1,
+          '_id.year': 1,
+          '_id.month': 1,
+          '_id.day': 1,
         },
       },
     ]);
 
     // Get projects by status
-    const projectsByStatus = await Project.aggregate([
+    const projectsByStatus = await Project.aggregate<MongoStatusGroupResult>([
       {
         $group: {
-          _id: "$status",
+          _id: '$status',
           count: { $sum: 1 },
         },
       },
     ]);
 
     // Get projects with most tasks
-    const projectsWithMostTasks = await Task.aggregate([
+    const projectsWithMostTasks = await Task.aggregate<ProjectTaskData>([
       {
         $match: {
           project: { $exists: true, $ne: null },
@@ -438,7 +485,7 @@ export const getProjectStatistics = async (days = 30): Promise<any> => {
       },
       {
         $group: {
-          _id: "$project",
+          _id: '$project',
           count: { $sum: 1 },
         },
       },
@@ -452,32 +499,35 @@ export const getProjectStatistics = async (days = 30): Promise<any> => {
       },
       {
         $lookup: {
-          from: "projects",
-          localField: "_id",
-          foreignField: "_id",
-          as: "project",
+          from: 'projects',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'project',
         },
       },
       {
-        $unwind: "$project",
+        $unwind: '$project',
       },
       {
         $project: {
           _id: 1,
           count: 1,
-          name: "$project.name",
-          status: "$project.status",
+          name: '$project.name',
+          status: '$project.status',
         },
       },
     ]);
 
     // Format data
-    const result = {
+    const result: ProjectStatisticsData = {
       newProjects: formatDailyData(newProjectsByDay, days),
-      projectsByStatus: projectsByStatus.reduce((acc, item) => {
-        acc[item._id] = item.count;
-        return acc;
-      }, {}),
+      projectsByStatus: projectsByStatus.reduce(
+        (acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
       projectsWithMostTasks,
       lastUpdated: new Date(),
     };
@@ -487,7 +537,7 @@ export const getProjectStatistics = async (days = 30): Promise<any> => {
 
     return result;
   } catch (error) {
-    logger.error("Error getting project statistics:", error);
+    logger.error('Error getting project statistics:', error);
     throw error;
   }
 };
@@ -496,21 +546,21 @@ export const getProjectStatistics = async (days = 30): Promise<any> => {
  * Get team and workspace statistics
  * @returns Team and workspace statistics
  */
-export const getTeamWorkspaceStatistics = async (): Promise<any> => {
+export const getTeamWorkspaceStatistics = async (): Promise<TeamWorkspaceStatisticsData> => {
   // Try to get from cache
-  const cacheKey = "dashboard:team-workspace-statistics";
-  const cachedData = cache.get(cacheKey);
+  const cacheKey = 'dashboard:team-workspace-statistics';
+  const cachedData = cache.get(cacheKey) as TeamWorkspaceStatisticsData | null;
   if (cachedData) {
     return cachedData;
   }
 
   try {
     // Get teams with most members
-    const teamsWithMostMembers = await Team.aggregate([
+    const teamsWithMostMembers = await Team.aggregate<TeamMemberData>([
       {
         $project: {
           name: 1,
-          memberCount: { $size: "$members" },
+          memberCount: { $size: '$members' },
         },
       },
       {
@@ -524,7 +574,7 @@ export const getTeamWorkspaceStatistics = async (): Promise<any> => {
     ]);
 
     // Get workspaces with most projects
-    const workspacesWithMostProjects = await Project.aggregate([
+    const workspacesWithMostProjects = await Project.aggregate<WorkspaceProjectData>([
       {
         $match: {
           workspace: { $exists: true, $ne: null },
@@ -532,7 +582,7 @@ export const getTeamWorkspaceStatistics = async (): Promise<any> => {
       },
       {
         $group: {
-          _id: "$workspace",
+          _id: '$workspace',
           count: { $sum: 1 },
         },
       },
@@ -546,26 +596,26 @@ export const getTeamWorkspaceStatistics = async (): Promise<any> => {
       },
       {
         $lookup: {
-          from: "workspaces",
-          localField: "_id",
-          foreignField: "_id",
-          as: "workspace",
+          from: 'workspaces',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'workspace',
         },
       },
       {
-        $unwind: "$workspace",
+        $unwind: '$workspace',
       },
       {
         $project: {
           _id: 1,
           count: 1,
-          name: "$workspace.name",
+          name: '$workspace.name',
         },
       },
     ]);
 
     // Format data
-    const result = {
+    const result: TeamWorkspaceStatisticsData = {
       teamsWithMostMembers,
       workspacesWithMostProjects,
       lastUpdated: new Date(),
@@ -576,7 +626,7 @@ export const getTeamWorkspaceStatistics = async (): Promise<any> => {
 
     return result;
   } catch (error) {
-    logger.error("Error getting team and workspace statistics:", error);
+    logger.error('Error getting team and workspace statistics:', error);
     throw error;
   }
 };
@@ -586,23 +636,46 @@ export const getTeamWorkspaceStatistics = async (): Promise<any> => {
  * @param userId User ID
  * @returns User dashboard data
  */
-export const getUserDashboard = async (userId: string): Promise<any> => {
+export const getUserDashboard = async (userId: string): Promise<UserDashboardData> => {
   // Try to get from cache
   const cacheKey = `dashboard:user:${userId}`;
-  const cachedData = cache.get(cacheKey);
+  const cachedData = cache.get(cacheKey) as UserDashboardData | null;
   if (cachedData) {
     return cachedData;
   }
 
   try {
     // Get user's tasks
-    const tasks = await Task.find({ user: userId }).sort({ createdAt: -1 }).limit(10);
+    const tasks = await Task.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean()
+      .then((tasks) =>
+        tasks.map((task) => ({
+          _id: task._id.toString(),
+          title: task.title,
+          status: task.status,
+          createdAt: task.createdAt,
+          updatedAt: task.updatedAt,
+        })),
+      );
 
     // Get user's projects
-    const projects = await Project.find({ user: userId }).sort({ createdAt: -1 }).limit(5);
+    const projects = await Project.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean()
+      .then((projects) =>
+        projects.map((project) => ({
+          _id: project._id.toString(),
+          name: project.name,
+          status: project.isArchived ? 'archived' : 'active', // Derive status from isArchived property
+          createdAt: project.createdAt,
+        })),
+      );
 
     // Get user's tasks by status
-    const tasksByStatus = await Task.aggregate([
+    const tasksByStatus = await Task.aggregate<MongoStatusGroupResult>([
       {
         $match: {
           user: new mongoose.Types.ObjectId(userId),
@@ -610,14 +683,14 @@ export const getUserDashboard = async (userId: string): Promise<any> => {
       },
       {
         $group: {
-          _id: "$status",
+          _id: '$status',
           count: { $sum: 1 },
         },
       },
     ]);
 
     // Get user's tasks by priority
-    const tasksByPriority = await Task.aggregate([
+    const tasksByPriority = await Task.aggregate<MongoStatusGroupResult>([
       {
         $match: {
           user: new mongoose.Types.ObjectId(userId),
@@ -625,7 +698,7 @@ export const getUserDashboard = async (userId: string): Promise<any> => {
       },
       {
         $group: {
-          _id: "$priority",
+          _id: '$priority',
           count: { $sum: 1 },
         },
       },
@@ -635,33 +708,61 @@ export const getUserDashboard = async (userId: string): Promise<any> => {
     const now = new Date();
     const upcomingDeadlines = await Task.find({
       user: userId,
-      dueDate: { $gte: now },
-      status: { $ne: "done" },
+      dueDate: { $gte: now, $exists: true, $ne: null },
+      status: { $ne: 'done' },
     })
       .sort({ dueDate: 1 })
-      .limit(5);
+      .limit(5)
+      .lean()
+      .then((tasks) =>
+        tasks
+          .filter((task) => task.dueDate) // Filter out tasks without dueDate
+          .map((task) => ({
+            _id: task._id.toString(),
+            title: task.title,
+            dueDate: task.dueDate!,
+            priority: task.priority.toString(),
+          })),
+      );
 
     // Get user's overdue tasks
     const overdueTasks = await Task.find({
       user: userId,
-      dueDate: { $lt: now },
-      status: { $ne: "done" },
+      dueDate: { $lt: now, $exists: true, $ne: null },
+      status: { $ne: 'done' },
     })
       .sort({ dueDate: 1 })
-      .limit(5);
+      .limit(5)
+      .lean()
+      .then((tasks) =>
+        tasks
+          .filter((task) => task.dueDate) // Filter out tasks without dueDate
+          .map((task) => ({
+            _id: task._id.toString(),
+            title: task.title,
+            dueDate: task.dueDate!,
+            status: task.status.toString(),
+          })),
+      );
 
     // Format data
-    const result = {
+    const result: UserDashboardData = {
       recentTasks: tasks,
       projects,
-      tasksByStatus: tasksByStatus.reduce((acc, item) => {
-        acc[item._id] = item.count;
-        return acc;
-      }, {}),
-      tasksByPriority: tasksByPriority.reduce((acc, item) => {
-        acc[item._id] = item.count;
-        return acc;
-      }, {}),
+      tasksByStatus: tasksByStatus.reduce(
+        (acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+      tasksByPriority: tasksByPriority.reduce(
+        (acc, item) => {
+          acc[item._id] = item.count;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
       upcomingDeadlines,
       overdueTasks,
       lastUpdated: new Date(),
@@ -685,21 +786,21 @@ export const getUserDashboard = async (userId: string): Promise<any> => {
 export const getUserDashboardLayout = async (userId: string): Promise<DashboardLayout> => {
   // Try to get from cache
   const cacheKey = `dashboard:layout:${userId}`;
-  const cachedLayout = cache.get(cacheKey);
+  const cachedLayout = cache.get(cacheKey) as DashboardLayout | null;
   if (cachedLayout) {
-    return cachedLayout as DashboardLayout;
+    return cachedLayout;
   }
 
   try {
     // Get user from database
-    const user = await User.findById(userId);
+    const user = (await User.findById(userId).lean()) as UserWithDashboardLayout | null;
     if (!user) {
-      throw new Error("User not found");
+      throw new Error('User not found');
     }
 
     // Check if user has a dashboard layout
     if (user.dashboardLayout) {
-      return user.dashboardLayout as unknown as DashboardLayout;
+      return user.dashboardLayout;
     }
 
     // Create default dashboard layout
@@ -707,38 +808,38 @@ export const getUserDashboardLayout = async (userId: string): Promise<DashboardL
       columns: 3,
       widgets: [
         {
-          id: "tasks-overview",
+          id: 'tasks-overview',
           type: WidgetType.TASKS_OVERVIEW,
-          title: "Tasks Overview",
-          size: "medium",
+          title: 'Tasks Overview',
+          size: 'medium',
           position: { x: 0, y: 0, width: 1, height: 1 },
         },
         {
-          id: "tasks-by-status",
+          id: 'tasks-by-status',
           type: WidgetType.TASKS_BY_STATUS,
-          title: "Tasks by Status",
-          size: "medium",
+          title: 'Tasks by Status',
+          size: 'medium',
           position: { x: 1, y: 0, width: 1, height: 1 },
         },
         {
-          id: "upcoming-deadlines",
+          id: 'upcoming-deadlines',
           type: WidgetType.UPCOMING_DEADLINES,
-          title: "Upcoming Deadlines",
-          size: "medium",
+          title: 'Upcoming Deadlines',
+          size: 'medium',
           position: { x: 2, y: 0, width: 1, height: 1 },
         },
         {
-          id: "project-progress",
+          id: 'project-progress',
           type: WidgetType.PROJECT_PROGRESS,
-          title: "Project Progress",
-          size: "large",
+          title: 'Project Progress',
+          size: 'large',
           position: { x: 0, y: 1, width: 2, height: 1 },
         },
         {
-          id: "recent-activity",
+          id: 'recent-activity',
           type: WidgetType.RECENT_ACTIVITY,
-          title: "Recent Activity",
-          size: "medium",
+          title: 'Recent Activity',
+          size: 'medium',
           position: { x: 2, y: 1, width: 1, height: 1 },
         },
       ],
@@ -783,6 +884,358 @@ export const updateUserDashboardLayout = async (
 };
 
 /**
+ * Get tasks overview data
+ * @param userId User ID
+ * @returns Tasks overview data
+ */
+const getTasksOverviewData = async (userId: string): Promise<TaskOverviewData> => {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  const [totalTasks, completedTasks, overdueTasks, dueTodayTasks, dueThisWeekTasks] =
+    await Promise.all([
+      Task.countDocuments({ user: userId }),
+      Task.countDocuments({ user: userId, status: 'done' }),
+      Task.countDocuments({
+        user: userId,
+        dueDate: { $lt: now, $exists: true, $ne: null },
+        status: { $ne: 'done' },
+      }),
+      Task.countDocuments({
+        user: userId,
+        dueDate: { $gte: today, $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000) },
+        status: { $ne: 'done' },
+      }),
+      Task.countDocuments({
+        user: userId,
+        dueDate: { $gte: now, $lte: weekFromNow },
+        status: { $ne: 'done' },
+      }),
+    ]);
+
+  const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+  return {
+    totalTasks,
+    completedTasks,
+    overdueTasks,
+    dueTodayTasks,
+    dueThisWeekTasks,
+    completionRate,
+  };
+};
+
+/**
+ * Get tasks by status data
+ * @param userId User ID
+ * @returns Tasks by status data
+ */
+const getTasksByStatusData = async (userId: string): Promise<TasksByStatusData> => {
+  const tasksByStatus = await Task.aggregate<MongoStatusGroupResult>([
+    {
+      $match: {
+        user: new mongoose.Types.ObjectId(userId),
+      },
+    },
+    {
+      $group: {
+        _id: '$status',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  return {
+    data: tasksByStatus.map((item) => ({
+      status: item._id,
+      count: item.count,
+    })),
+  };
+};
+
+/**
+ * Get tasks by priority data
+ * @param userId User ID
+ * @returns Tasks by priority data
+ */
+const getTasksByPriorityData = async (userId: string): Promise<TasksByPriorityData> => {
+  const tasksByPriority = await Task.aggregate<MongoStatusGroupResult>([
+    {
+      $match: {
+        user: new mongoose.Types.ObjectId(userId),
+      },
+    },
+    {
+      $group: {
+        _id: '$priority',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  return {
+    data: tasksByPriority.map((item) => ({
+      priority: item._id,
+      count: item.count,
+    })),
+  };
+};
+
+/**
+ * Get recent activity data
+ * @param userId User ID
+ * @returns Recent activity data
+ */
+const getRecentActivityData = async (userId: string): Promise<ActivityData> => {
+  const recentTasks = await Task.find({ user: userId }).sort({ updatedAt: -1 }).limit(10).lean();
+
+  const activities = recentTasks.map((task) => ({
+    type: 'task',
+    title: task.title,
+    status: task.status.toString(),
+    timestamp: task.updatedAt,
+  }));
+
+  return { activities };
+};
+
+/**
+ * Get upcoming deadlines data
+ * @param userId User ID
+ * @returns Upcoming deadlines data
+ */
+const getUpcomingDeadlinesData = async (userId: string): Promise<DeadlineData> => {
+  const now = new Date();
+  const upcomingTasks = await Task.find({
+    user: userId,
+    dueDate: { $gte: now, $exists: true, $ne: null },
+    status: { $ne: 'done' },
+  })
+    .sort({ dueDate: 1 })
+    .limit(10)
+    .lean();
+
+  const deadlines = upcomingTasks
+    .filter((task) => task.dueDate)
+    .map((task) => ({
+      _id: task._id.toString(),
+      title: task.title,
+      dueDate: task.dueDate!,
+      priority: task.priority.toString(),
+    }));
+
+  return { deadlines };
+};
+
+/**
+ * Get project progress data
+ * @param userId User ID
+ * @returns Project progress data
+ */
+const getProjectProgressData = async (userId: string): Promise<ProjectProgressData> => {
+  const userProjects = await Project.find({ user: userId }).lean();
+
+  const projects: ProjectProgressItem[] = await Promise.all(
+    userProjects.map(async (project) => {
+      const totalTasks = await Task.countDocuments({ project: project._id });
+      const completedTasks = await Task.countDocuments({
+        project: project._id,
+        status: 'done',
+      });
+
+      const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+      return {
+        projectId: project._id.toString(),
+        projectName: project.name,
+        totalTasks,
+        completedTasks,
+        progress,
+      };
+    }),
+  );
+
+  return { projects };
+};
+
+/**
+ * Get team workload data
+ * @param userId User ID
+ * @param teamId Team ID
+ * @returns Team workload data
+ */
+const getTeamWorkloadData = async (userId: string, teamId?: string): Promise<TeamWorkloadData> => {
+  if (!teamId) {
+    return {
+      teamId: '',
+      teamName: 'No team specified',
+      members: [],
+    };
+  }
+
+  const team = await Team.findById(teamId).lean();
+  if (!team) {
+    return {
+      teamId,
+      teamName: 'Team not found',
+      members: [],
+    };
+  }
+
+  // Use a more specific type for the intermediate array that might contain nulls
+  const membersWithNulls = await Promise.all(
+    team.members.map(async (member) => {
+      // Extract the user ID from the team member
+      const userId = member.user instanceof mongoose.Types.ObjectId ? member.user : member.user._id;
+
+      const user = await User.findById(userId).lean();
+      if (!user) {
+        return null;
+      }
+
+      const now = new Date();
+      const [totalTasks, completedTasks, overdueTasks] = await Promise.all([
+        Task.countDocuments({ user: userId }),
+        Task.countDocuments({ user: userId, status: 'done' }),
+        Task.countDocuments({
+          user: userId,
+          dueDate: { $lt: now, $exists: true, $ne: null },
+          status: { $ne: 'done' },
+        }),
+      ]);
+
+      const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+      return {
+        userId: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        totalTasks,
+        completedTasks,
+        overdueTasks,
+        completionRate,
+      };
+    }),
+  );
+
+  // Use type predicate to filter out nulls
+  const members = membersWithNulls.filter(
+    (member): member is TeamWorkloadMember => member !== null,
+  );
+
+  return {
+    teamId,
+    teamName: team.name,
+    members,
+  };
+};
+
+/**
+ * Get productivity chart data
+ * @param userId User ID
+ * @param period Time period (week, month, year)
+ * @returns Productivity chart data
+ */
+const getProductivityChartData = async (
+  userId: string,
+  period = 'month',
+): Promise<ProductivityChartData> => {
+  const days = period === 'week' ? 7 : period === 'month' ? 30 : 365;
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - days);
+  startDate.setHours(0, 0, 0, 0);
+
+  const productivityData = await Task.aggregate<MongoAggregationResult>([
+    {
+      $match: {
+        user: new mongoose.Types.ObjectId(userId),
+        completedAt: { $gte: startDate },
+        status: 'done',
+      },
+    },
+    {
+      $group: {
+        _id: {
+          year: { $year: '$completedAt' },
+          month: { $month: '$completedAt' },
+          day: { $dayOfMonth: '$completedAt' },
+        },
+        count: { $sum: 1 },
+      },
+    },
+    {
+      $sort: {
+        '_id.year': 1,
+        '_id.month': 1,
+        '_id.day': 1,
+      },
+    },
+  ]);
+
+  return {
+    data: formatDailyData(productivityData, days),
+    period,
+  };
+};
+
+/**
+ * Get completion rate data
+ * @param userId User ID
+ * @param period Time period (week, month, year)
+ * @returns Completion rate data
+ */
+const getCompletionRateData = async (
+  userId: string,
+  period = 'month',
+): Promise<CompletionRateData> => {
+  const days = period === 'week' ? 7 : period === 'month' ? 30 : 365;
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - days);
+  startDate.setHours(0, 0, 0, 0);
+
+  const [totalTasks, completedTasks] = await Promise.all([
+    Task.countDocuments({
+      user: userId,
+      createdAt: { $gte: startDate },
+    }),
+    Task.countDocuments({
+      user: userId,
+      createdAt: { $gte: startDate },
+      status: 'done',
+    }),
+  ]);
+
+  const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+  return {
+    totalTasks,
+    completedTasks,
+    completionRate,
+    period,
+  };
+};
+
+/**
+ * Get custom widget data
+ * @param userId User ID
+ * @param settings Widget settings
+ * @returns Custom widget data
+ */
+const getCustomWidgetData = async (
+  userId: string,
+  settings?: Record<string, unknown>,
+): Promise<CustomWidgetData> => {
+  // This would be implemented based on specific custom widget requirements
+  // For now, return a placeholder
+  return {
+    message: 'Custom widget data would be implemented based on specific requirements',
+    settings,
+    userId,
+  };
+};
+
+/**
  * Get widget data
  * @param userId User ID
  * @param widgetType Widget type
@@ -792,18 +1245,18 @@ export const updateUserDashboardLayout = async (
 export const getWidgetData = async (
   userId: string,
   widgetType: WidgetType,
-  settings?: Record<string, any>,
-): Promise<any> => {
+  settings?: Record<string, unknown>,
+): Promise<WidgetDataUnion> => {
   // Try to get from cache
-  const settingsHash = settings ? JSON.stringify(settings) : "";
+  const settingsHash = settings ? JSON.stringify(settings) : '';
   const cacheKey = `dashboard:widget:${userId}:${widgetType}:${settingsHash}`;
-  const cachedData = cache.get(cacheKey);
+  const cachedData = cache.get(cacheKey) as WidgetDataUnion | null;
   if (cachedData) {
     return cachedData;
   }
 
   try {
-    let data;
+    let data: WidgetDataUnion;
 
     switch (widgetType) {
       case WidgetType.TASKS_OVERVIEW:
@@ -825,221 +1278,77 @@ export const getWidgetData = async (
         data = await getProjectProgressData(userId);
         break;
       case WidgetType.TEAM_WORKLOAD:
-        data = await getTeamWorkloadData(userId, settings?.teamId);
+        data = await getTeamWorkloadData(userId, settings?.teamId as string);
         break;
       case WidgetType.PRODUCTIVITY_CHART:
-        data = await getProductivityChartData(userId, settings?.period || "month");
+        data = await getProductivityChartData(userId, settings?.period as string);
         break;
       case WidgetType.COMPLETION_RATE:
-        data = await getCompletionRateData(userId, settings?.period || "month");
+        data = await getCompletionRateData(userId, settings?.period as string);
         break;
       case WidgetType.CUSTOM:
         data = await getCustomWidgetData(userId, settings);
         break;
       default:
-        data = { error: "Unknown widget type" };
+        data = { error: 'Unknown widget type' };
     }
 
-    // Cache the data
+    // Cache the result
     cache.set(cacheKey, data, DASHBOARD_CACHE_TTL);
 
     return data;
   } catch (error) {
     logger.error(`Error getting widget data for user ${userId}, widget ${widgetType}:`, error);
-    throw error;
+    return { error: 'Failed to load widget data' };
   }
 };
 
 /**
- * Get tasks overview data
+ * Clear dashboard cache for a user
  * @param userId User ID
- * @returns Tasks overview data
  */
-const getTasksOverviewData = async (userId: string): Promise<any> => {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const nextWeek = new Date(today);
-  nextWeek.setDate(nextWeek.getDate() + 7);
+export const clearUserDashboardCache = (userId: string): void => {
+  const patterns = [
+    `dashboard:user:${userId}`,
+    `dashboard:layout:${userId}`,
+    `dashboard:widget:${userId}:*`,
+  ];
 
-  const [totalTasks, completedTasks, overdueTasks, dueTodayTasks, dueThisWeekTasks] = await Promise.all([
-    Task.countDocuments({ user: userId }),
-    Task.countDocuments({ user: userId, status: "done" }),
-    Task.countDocuments({
-      user: userId,
-      dueDate: { $lt: today },
-      status: { $ne: "done" },
-    }),
-    Task.countDocuments({
-      user: userId,
-      dueDate: { $gte: today, $lt: tomorrow },
-      status: { $ne: "done" },
-    }),
-    Task.countDocuments({
-      user: userId,
-      dueDate: { $gte: today, $lt: nextWeek },
-      status: { $ne: "done" },
-    }),
-  ]);
-
-  return {
-    totalTasks,
-    completedTasks,
-    overdueTasks,
-    dueTodayTasks,
-    dueThisWeekTasks,
-    completionRate: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0,
-  };
-};
-
-/**
- * Get tasks by status data
- * @param userId User ID
- * @returns Tasks by status data
- */
-const getTasksByStatusData = async (userId: string): Promise<any> => {
-  const tasksByStatus = await Task.aggregate([
-    {
-      $match: {
-        user: new mongoose.Types.ObjectId(userId),
-      },
-    },
-    {
-      $group: {
-        _id: "$status",
-        count: { $sum: 1 },
-      },
-    },
-  ]);
-
-  return {
-    data: tasksByStatus.map((item) => ({
-      status: item._id,
-      count: item.count,
-    })),
-  };
-};
-
-/**
- * Get tasks by priority data
- * @param userId User ID
- * @returns Tasks by priority data
- */
-const getTasksByPriorityData = async (userId: string): Promise<any> => {
-  const tasksByPriority = await Task.aggregate([
-    {
-      $match: {
-        user: new mongoose.Types.ObjectId(userId),
-      },
-    },
-    {
-      $group: {
-        _id: "$priority",
-        count: { $sum: 1 },
-      },
-    },
-  ]);
-
-  return {
-    data: tasksByPriority.map((item) => ({
-      priority: item._id,
-      count: item.count,
-    })),
-  };
-};
-
-/**
- * Get recent activity data
- * @param userId User ID
- * @returns Recent activity data
- */
-const getRecentActivityData = async (userId: string): Promise<any> => {
-  // This would typically come from an activity service
-  // For now, we'll simulate it with recent tasks
-  const recentTasks = await Task.find({ user: userId })
-    .sort({ updatedAt: -1 })
-    .limit(10)
-    .select("title status updatedAt");
-
-  return {
-    activities: recentTasks.map((task) => ({
-      type: "task_updated",
-      title: task.title,
-      status: task.status,
-      timestamp: task.updatedAt,
-    })),
-  };
-};
-
-/**
- * Get upcoming deadlines data
- * @param userId User ID
- * @returns Upcoming deadlines data
- */
-const getUpcomingDeadlinesData = async (userId: string): Promise<any> => {
-  const now = new Date();
-  const upcomingDeadlines = await Task.find({
-    user: userId,
-    dueDate: { $gte: now },
-    status: { $ne: "done" },
-  })
-    .sort({ dueDate: 1 })
-    .limit(5)
-    .select("title dueDate priority");
-
-  return {
-    deadlines: upcomingDeadlines,
-  };
-};
-
-/**
- * Get project progress data
- * @param userId User ID
- * @returns Project progress data
- */
-const getProjectProgressData = async (userId: string): Promise<any> => {
-  // Get user's projects
-  const projects = await Project.find({ user: userId }).select("_id name");
-
-  // Get task counts for each project
-  const projectProgress = await Promise.all(
-    projects.map(async (project) => {
-      const [totalTasks, completedTasks] = await Promise.all([
-        Task.countDocuments({ user: userId, project: project._id }),
-        Task.countDocuments({ user: userId, project: project._id, status: "done" }),
-      ]);
-
-      return {
-        projectId: project._id,
-        projectName: project.name,
-        totalTasks,
-        completedTasks,
-        progress: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0,
-      };
-    }),
-  );
-
-  return {
-    projects: projectProgress,
-  };
-};
-
-/**
- * Get team workload data
- * @param userId User ID
- * @param teamId Team ID
- * @returns Team workload data
- */
-const getTeamWorkloadData = async (userId: string, teamId?: string): Promise<any> => {
-  if (!teamId) {
-    // Get user's teams
-    const teams = await Team.find({ "members.user": userId }).select("_id");
-    if (teams.length === 0) {
-      return { error: "No teams found" };
+  patterns.forEach((pattern) => {
+    if (pattern.includes('*')) {
+      // For patterns with wildcards, we'd need to implement cache key scanning
+      // This is a simplified version - in production, you might want to use Redis SCAN
+      Object.values(WidgetType).forEach((widgetType) => {
+        cache.del(`dashboard:widget:${userId}:${widgetType}:`);
+      });
+    } else {
+      cache.del(pattern);
     }
-    teamId = teams[0]._id.toString();
-  }
+  });
+};
 
-  // Get team members
-  const team = await Team.findById(teamId).populate("members.user", "name email");
+/**
+ * Clear all dashboard cache
+ */
+export const clearAllDashboardCache = (): void => {
+  const patterns = [
+    'dashboard:system-overview',
+    'dashboard:user-activity:*',
+    'dashboard:task-statistics:*',
+    'dashboard:project-statistics:*',
+    'dashboard:team-workspace-statistics',
+  ];
+
+  patterns.forEach((pattern) => {
+    if (pattern.includes('*')) {
+      // This is a simplified version - in production, you'd implement proper cache scanning
+      [7, 30, 365].forEach((days) => {
+        cache.del(`dashboard:user-activity:${days}`);
+        cache.del(`dashboard:task-statistics:${days}`);
+        cache.del(`dashboard:project-statistics:${days}`);
+      });
+    } else {
+      cache.del(pattern);
+    }
+  });
+};

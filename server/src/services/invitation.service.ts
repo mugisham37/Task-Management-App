@@ -6,6 +6,7 @@ import { createActivity } from './activity.service';
 import { ActivityType } from '../models/activity.model';
 import { sendEmail } from './email.service';
 import config from '../config/environment';
+import { IInvitationTeam, IPopulatedUser, ITeamMember, ITeam } from '../types/team.types';
 
 /**
  * Create a new invitation
@@ -21,14 +22,14 @@ export const createInvitation = async (
     role?: TeamRole;
   },
 ): Promise<IInvitation> => {
-  // Check if team exists
-  const team = await Team.findById(invitationData.teamId);
+  // Check if team exists and cast to proper type
+  const team = (await Team.findById(invitationData.teamId)) as ITeam | null;
   if (!team) {
     throw new NotFoundError('Team not found');
   }
 
-  // Check if user is an adminin or owner of the team
-  const userMember = team.members.find((member) => member.user?.toString() === userId);
+  // Check if user is an admin or owner of the team
+  const userMember = team.members.find((member: ITeamMember) => member.user?.toString() === userId);
   if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role as TeamRole)) {
     throw new ForbiddenError('You do not have permission to invite members to this team');
   }
@@ -37,7 +38,7 @@ export const createInvitation = async (
   const existingUser = await User.findOne({ email: invitationData.email.toLowerCase() });
   if (existingUser) {
     const isAlreadyMember = team.members.some(
-      (member) => member.user?.toString() === existingUser._id?.toString(),
+      (member: ITeamMember) => member.user?.toString() === existingUser._id?.toString(),
     );
     if (isAlreadyMember) {
       throw new ValidationError('User is already a member of this team');
@@ -100,7 +101,7 @@ export const createInvitation = async (
   // Create activity log
   await createActivity(userId, {
     type: ActivityType.TEAM_MEMBER_ADDED,
-    team: team._id as string,
+    team: team._id.toString(),
     data: {
       teamName: team.name,
       memberEmail: invitation.email,
@@ -129,7 +130,7 @@ export const getTeamInvitations = async (
   }
 
   // Check if user is an admin or owner of the team
-  const userMember = team.members.find((member) => member.user?.toString() === userId);
+  const userMember = team.members.find((member: ITeamMember) => member.user?.toString() === userId);
   if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role as TeamRole)) {
     throw new ForbiddenError('You do not have permission to view team invitations');
   }
@@ -227,8 +228,10 @@ export const acceptInvitation = async (
   }
 
   // Check if user is already a member of the team
-  const team = invitation.team as any;
-  const isAlreadyMember = team.members.some((member: any) => member.user?.toString() === userId);
+  const team = invitation.team as IInvitationTeam;
+  const isAlreadyMember = team.members.some(
+    (member: ITeamMember) => member.user?.toString() === userId,
+  );
   if (isAlreadyMember) {
     invitation.status = InvitationStatus.ACCEPTED;
     await invitation.save();
@@ -253,7 +256,7 @@ export const acceptInvitation = async (
   // Create activity log
   await createActivity(userId, {
     type: ActivityType.TEAM_MEMBER_ADDED,
-    team: team._id as string,
+    team: team._id.toString(),
     data: {
       teamName: team.name,
       memberName: user.name,
@@ -317,9 +320,9 @@ export const declineInvitation = async (
   // Create activity log
   await createActivity(userId, {
     type: ActivityType.TEAM_MEMBER_REMOVED,
-    team: (invitation.team as any)._id as string,
+    team: (invitation.team as IInvitationTeam)._id.toString(),
     data: {
-      teamName: (invitation.team as any).name,
+      teamName: (invitation.team as IInvitationTeam).name,
       memberName: user.name,
       memberEmail: user.email,
       action: 'declined',
@@ -327,7 +330,7 @@ export const declineInvitation = async (
   });
 
   return {
-    message: `You have declined the invitation to join ${(invitation.team as any).name}`,
+    message: `You have declined the invitation to join ${(invitation.team as IInvitationTeam).name}`,
   };
 };
 
@@ -350,8 +353,8 @@ export const cancelInvitation = async (
   }
 
   // Check if user is an admin or owner of the team
-  const team = invitation.team as any;
-  const userMember = team.members.find((member: any) => member.user?.toString() === userId);
+  const team = invitation.team as IInvitationTeam;
+  const userMember = team.members.find((member: ITeamMember) => member.user?.toString() === userId);
   if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role as TeamRole)) {
     throw new ForbiddenError('You do not have permission to cancel this invitation');
   }
@@ -367,7 +370,7 @@ export const cancelInvitation = async (
   // Create activity log
   await createActivity(userId, {
     type: ActivityType.TEAM_MEMBER_REMOVED,
-    team: team._id as string,
+    team: team._id.toString(),
     data: {
       teamName: team.name,
       memberEmail: invitation.email,
@@ -392,8 +395,8 @@ export const resendInvitation = async (
 ): Promise<IInvitation> => {
   // Find invitation by ID
   const invitation = await Invitation.findById(invitationId)
-    .populate('team', 'name members')
-    .populate('invitedBy', 'name email');
+    .populate<{ team: IInvitationTeam }>('team', 'name members')
+    .populate<{ invitedBy: IPopulatedUser }>('invitedBy', 'name email');
 
   // Check if invitation exists
   if (!invitation) {
@@ -401,8 +404,8 @@ export const resendInvitation = async (
   }
 
   // Check if user is an admin or owner of the team
-  const team = invitation.team as any;
-  const userMember = team.members.find((member: any) => member.user?.toString() === userId);
+  const team = invitation.team as IInvitationTeam;
+  const userMember = team.members.find((member: ITeamMember) => member.user?.toString() === userId);
   if (!userMember || ![TeamRole.ADMIN, TeamRole.OWNER].includes(userMember.role as TeamRole)) {
     throw new ForbiddenError('You do not have permission to resend this invitation');
   }
@@ -436,7 +439,7 @@ export const resendInvitation = async (
   // Create activity log
   await createActivity(userId, {
     type: ActivityType.TEAM_MEMBER_ADDED,
-    team: team._id as string,
+    team: team._id.toString(),
     data: {
       teamName: team.name,
       memberEmail: invitation.email,

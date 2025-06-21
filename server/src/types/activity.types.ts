@@ -190,6 +190,7 @@ export type ActivityDataField = {
   oldRole?: string;
   newRole?: string;
   action?: string;
+  role?: string; // Add role field for team member invitations
   // Task template-related fields
   templateName?: string;
   isTemplate?: boolean;

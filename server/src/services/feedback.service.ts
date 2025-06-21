@@ -3,6 +3,16 @@ import { NotFoundError, ForbiddenError } from '../utils/app-error';
 import { sendUserNotification } from './websocket.service';
 import { sendEmail } from './email.service';
 import logger from '../config/logger';
+import { NotificationType } from '../models/notification.model';
+import type {
+  FeedbackFilterQuery,
+  FeedbackPaginationQuery,
+  FeedbackStatistics,
+  FeedbackStatsByType,
+  FeedbackStatsByStatus,
+  FeedbackStatsByPriority,
+  MonthlyFeedbackStats,
+} from '../types/feedback.types';
 
 /**
  * Create a new feedback
@@ -64,7 +74,7 @@ export const createFeedback = async (
  */
 export const getFeedbackById = async (userId: string, feedbackId: string): Promise<IFeedback> => {
   // Find feedback
-  const feedback = await Feedback.findById(feedbackId);
+  const feedback = (await Feedback.findById(feedbackId)) as IFeedback;
 
   // Check if feedback exists
   if (!feedback) {
@@ -87,15 +97,7 @@ export const getFeedbackById = async (userId: string, feedbackId: string): Promi
  */
 export const getUserFeedbacks = async (
   userId: string,
-  filter: {
-    type?: 'bug' | 'feature' | 'improvement' | 'other';
-    status?: 'pending' | 'in-progress' | 'resolved' | 'rejected';
-    priority?: 'low' | 'medium' | 'high' | 'critical';
-    page?: number;
-    limit?: number;
-    sortBy?: string;
-    sortOrder?: 'asc' | 'desc';
-  },
+  filter: FeedbackPaginationQuery,
 ): Promise<{
   feedbacks: IFeedback[];
   page: number;
@@ -114,7 +116,7 @@ export const getUserFeedbacks = async (
   } = filter;
 
   // Build query
-  const query: any = { user: userId };
+  const query: FeedbackFilterQuery = { user: userId };
 
   if (type) {
     query.type = type;
@@ -174,7 +176,7 @@ export const updateFeedback = async (
   },
 ): Promise<IFeedback> => {
   // Find feedback
-  const feedback = await Feedback.findById(feedbackId);
+  const feedback = (await Feedback.findById(feedbackId)) as IFeedback;
 
   // Check if feedback exists
   if (!feedback) {
@@ -205,7 +207,7 @@ export const updateFeedback = async (
  */
 export const deleteFeedback = async (userId: string, feedbackId: string): Promise<void> => {
   // Find feedback
-  const feedback = await Feedback.findById(feedbackId);
+  const feedback = (await Feedback.findById(feedbackId)) as IFeedback;
 
   // Check if feedback exists
   if (!feedback) {
@@ -237,15 +239,9 @@ export const deleteFeedback = async (userId: string, feedbackId: string): Promis
  * @param filter Filter options
  * @returns Feedbacks and pagination info
  */
-export const getAllFeedbacks = async (filter: {
-  type?: 'bug' | 'feature' | 'improvement' | 'other';
-  status?: 'pending' | 'in-progress' | 'resolved' | 'rejected';
-  priority?: 'low' | 'medium' | 'high' | 'critical';
-  page?: number;
-  limit?: number;
-  sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
-}): Promise<{
+export const getAllFeedbacks = async (
+  filter: FeedbackPaginationQuery,
+): Promise<{
   feedbacks: IFeedback[];
   page: number;
   limit: number;
@@ -263,7 +259,7 @@ export const getAllFeedbacks = async (filter: {
   } = filter;
 
   // Build query
-  const query: any = {};
+  const query: FeedbackFilterQuery = {};
 
   if (type) {
     query.type = type;
@@ -314,7 +310,7 @@ export const updateFeedbackStatus = async (
   },
 ): Promise<IFeedback> => {
   // Find feedback
-  const feedback = await Feedback.findById(feedbackId);
+  const feedback = (await Feedback.findById(feedbackId)) as IFeedback;
 
   // Check if feedback exists
   if (!feedback) {
@@ -329,9 +325,10 @@ export const updateFeedbackStatus = async (
   try {
     // Send notification via WebSocket
     sendUserNotification(feedback.user.toString(), {
-      type: 'feedback_status_update',
+      type: NotificationType.FEEDBACK_STATUS_UPDATE,
       message: `Your feedback "${feedback.title}" has been updated to ${feedback.status}`,
-      feedbackId: feedback._id,
+      feedbackId: feedback.id, // Use the id getter instead of _id
+      data: {}, // Add empty data object to satisfy the type
     });
 
     // Send email notification
@@ -361,7 +358,7 @@ ${feedback.adminResponse ? `<p><strong>Admin Response:</strong> ${feedback.admin
  * Get feedback statistics
  * @returns Feedback statistics
  */
-export const getFeedbackStatistics = async (): Promise<any> => {
+export const getFeedbackStatistics = async (): Promise<FeedbackStatistics> => {
   // Get feedback counts by type
   const typeStats = await Feedback.aggregate([
     {
@@ -411,27 +408,34 @@ export const getFeedbackStatistics = async (): Promise<any> => {
     },
   ]);
 
-  // Format monthly stats
-  const formattedMonthlyStats = monthlyStats.map((stat) => ({
+  // Format monthly stats with proper typing
+  const formattedMonthlyStats: MonthlyFeedbackStats[] = monthlyStats.map((stat) => ({
     year: stat._id.year,
     month: stat._id.month,
     count: stat.count,
   }));
 
+  // Create properly typed stat objects
+  const byType: FeedbackStatsByType = typeStats.reduce((acc, stat) => {
+    acc[stat._id as keyof FeedbackStatsByType] = stat.count;
+    return acc;
+  }, {} as FeedbackStatsByType);
+
+  const byStatus: FeedbackStatsByStatus = statusStats.reduce((acc, stat) => {
+    acc[stat._id as keyof FeedbackStatsByStatus] = stat.count;
+    return acc;
+  }, {} as FeedbackStatsByStatus);
+
+  const byPriority: FeedbackStatsByPriority = priorityStats.reduce((acc, stat) => {
+    acc[stat._id as keyof FeedbackStatsByPriority] = stat.count;
+    return acc;
+  }, {} as FeedbackStatsByPriority);
+
   return {
     total: await Feedback.countDocuments(),
-    byType: typeStats.reduce((acc, stat) => {
-      acc[stat._id] = stat.count;
-      return acc;
-    }, {}),
-    byStatus: statusStats.reduce((acc, stat) => {
-      acc[stat._id] = stat.count;
-      return acc;
-    }, {}),
-    byPriority: priorityStats.reduce((acc, stat) => {
-      acc[stat._id] = stat.count;
-      return acc;
-    }, {}),
+    byType,
+    byStatus,
+    byPriority,
     monthly: formattedMonthlyStats,
   };
 };

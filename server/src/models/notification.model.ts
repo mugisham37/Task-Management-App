@@ -9,6 +9,7 @@ export enum NotificationType {
   TASK_COMPLETED = 'task_completed',
   TASK_COMMENTED = 'task_commented',
   SYSTEM = 'system',
+  FEEDBACK_STATUS_UPDATE = 'feedback_status_update',
 }
 
 // Define specific data types for each notification type

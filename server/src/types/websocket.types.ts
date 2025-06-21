@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import type {
   IChecklistItem,
   ITaskAttachment,
@@ -60,13 +61,16 @@ export interface WorkspaceUpdateData {
  * Notification data sent over websocket
  */
 export interface NotificationUpdateData {
-  id: string;
+  id?: string;
   type: NotificationType;
-  title: string;
+  title?: string;
   message: string;
-  data: NotificationData;
-  isRead: boolean;
-  createdAt: Date;
+  data?: NotificationData;
+  isRead?: boolean;
+  createdAt?: Date;
+  feedbackId?: string | mongoose.Types.ObjectId;
+  taskId?: string | mongoose.Types.ObjectId;
+  projectId?: string | mongoose.Types.ObjectId;
 }
 
 /**

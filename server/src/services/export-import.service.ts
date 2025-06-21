@@ -2,17 +2,22 @@ import fs from 'fs';
 import path from 'path';
 import csv from 'csv-parser';
 import { Parser } from 'json2csv';
-import type mongoose from 'mongoose';
 import * as models from '../models';
 import logger from '../config/logger';
 import config from '../config/environment';
 import { BadRequestError, NotFoundError } from '../utils/app-error';
+import {
+  BaseDocument,
+  ExportFormat,
+  ImportOptions,
+  ImportResult,
+  BulkWriteError,
+  CSVRowData,
+  ModelMapping,
+} from '../types/export-import.types';
 
-// Define export formats
-type ExportFormat = 'csv' | 'json';
-
-// Define model mapping
-const modelMapping: Record<string, mongoose.Model<any>> = {
+// Define model mapping with proper typing
+const modelMapping: ModelMapping = {
   users: models.User,
   tasks: models.Task,
   projects: models.Project,
@@ -39,7 +44,7 @@ const modelMapping: Record<string, mongoose.Model<any>> = {
 export const exportData = async (
   modelName: string,
   format: ExportFormat,
-  query: any = {},
+  query: Record<string, unknown> = {},
   userId: string,
 ): Promise<string> => {
   try {
@@ -61,7 +66,7 @@ export const exportData = async (
     const filePath = path.join(exportDir, fileName);
 
     // Get data
-    const data = await Model.find(query).lean();
+    const data = await Model.find(query).lean<BaseDocument[]>();
 
     // Export data based on format
     if (format === 'csv') {
@@ -96,11 +101,8 @@ export const exportData = async (
 export const importData = async (
   modelName: string,
   filePath: string,
-  options: {
-    mode: 'insert' | 'update' | 'upsert';
-    identifierField?: string;
-  } = { mode: 'insert' },
-): Promise<{ inserted: number; updated: number; errors: any[] }> => {
+  options: ImportOptions = { mode: 'insert' },
+): Promise<ImportResult> => {
   try {
     // Check if model exists
     const Model = modelMapping[modelName];
@@ -117,30 +119,46 @@ export const importData = async (
     const fileExt = path.extname(filePath).toLowerCase();
 
     // Parse file based on extension
-    let data: any[] = [];
+    let data: BaseDocument[] = [];
     if (fileExt === '.csv') {
       // Parse CSV file
-      data = await new Promise((resolve, reject) => {
-        const results: any[] = [];
+      data = await new Promise<BaseDocument[]>((resolve, reject) => {
+        const results: BaseDocument[] = [];
         fs.createReadStream(filePath)
           .pipe(csv())
-          .on('data', (data: any) => results.push(data))
+          .on('data', (csvRow: CSVRowData) => {
+            // Convert CSV row to BaseDocument
+            const document: BaseDocument = {};
+            Object.entries(csvRow).forEach(([key, value]) => {
+              document[key] = value;
+            });
+            results.push(document);
+          })
           .on('end', () => resolve(results))
-          .on('error', (error: any) => reject(error));
+          .on('error', (parseError: Error) => reject(parseError));
       });
     } else if (fileExt === '.json') {
       // Parse JSON file
       const fileContent = fs.readFileSync(filePath, 'utf8');
-      data = JSON.parse(fileContent);
+      const parsedData: unknown = JSON.parse(fileContent);
+
+      // Ensure data is an array
+      if (Array.isArray(parsedData)) {
+        data = parsedData as BaseDocument[];
+      } else if (parsedData && typeof parsedData === 'object') {
+        data = [parsedData as BaseDocument];
+      } else {
+        throw new BadRequestError('Invalid JSON format: expected object or array');
+      }
     } else {
       throw new BadRequestError(`Unsupported file extension: ${fileExt}`);
     }
 
     // Import data based on mode
-    const result = {
+    const result: ImportResult = {
       inserted: 0,
       updated: 0,
-      errors: [] as any[],
+      errors: [],
     };
 
     if (options.mode === 'insert') {
@@ -148,10 +166,11 @@ export const importData = async (
       try {
         const inserted = await Model.insertMany(data, { ordered: false });
         result.inserted = inserted.length;
-      } catch (error: any) {
-        if (error.writeErrors) {
-          result.inserted = error.insertedDocs?.length || 0;
-          result.errors = error.writeErrors;
+      } catch (error) {
+        const bulkError = error as BulkWriteError;
+        if (bulkError.writeErrors) {
+          result.inserted = bulkError.insertedDocs?.length || 0;
+          result.errors = bulkError.writeErrors;
         } else {
           throw error;
         }
@@ -160,7 +179,12 @@ export const importData = async (
       // Update or upsert data
       const identifierField = options.identifierField || '_id';
       const bulkOps = data.map((item) => {
-        const filter = { [identifierField]: item[identifierField] };
+        const filterValue = item[identifierField];
+        if (filterValue === undefined || filterValue === null) {
+          throw new BadRequestError(`Missing identifier field: ${identifierField}`);
+        }
+
+        const filter = { [identifierField]: filterValue };
         const update = { $set: item };
         return {
           updateOne: {
@@ -172,9 +196,14 @@ export const importData = async (
       });
 
       if (bulkOps.length > 0) {
-        const bulkResult = await Model.bulkWrite(bulkOps);
-        result.inserted = bulkResult.upsertedCount || 0;
-        result.updated = bulkResult.modifiedCount || 0;
+        try {
+          const bulkResult = await Model.bulkWrite(bulkOps);
+          result.inserted = bulkResult.upsertedCount || 0;
+          result.updated = bulkResult.modifiedCount || 0;
+        } catch (error) {
+          logger.error('Bulk write operation failed:', error);
+          throw error;
+        }
       }
     } else {
       throw new BadRequestError(`Unsupported import mode: ${options.mode}`);

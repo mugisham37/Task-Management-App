@@ -4,6 +4,43 @@ import Task from '../models/task.model';
 import { NotFoundError, ForbiddenError, ValidationError } from '../utils/app-error';
 import { APIFeatures } from '../utils/api-features';
 
+// Define proper interface for query parameters
+interface ProjectQueryParams {
+  includeArchived?: string;
+  search?: string;
+  sort?: string;
+  fields?: string;
+  page?: string;
+  limit?: string;
+  [key: string]: string | undefined;
+}
+
+// Define interface for project statistics
+interface ProjectStats {
+  project: {
+    id: string;
+    name: string;
+    description?: string;
+    color?: string;
+    isArchived: boolean;
+  };
+  stats: {
+    total: number;
+    completed: number;
+    overdue: number;
+    byStatus: Record<string, number>;
+    byPriority: Record<string, number>;
+    recentTasks: Array<{
+      _id: string;
+      title: string;
+      status: string;
+      priority: string;
+      dueDate?: Date;
+      createdAt: Date;
+    }>;
+  };
+}
+
 /**
  * Create a new project
  * @param userId User ID
@@ -41,7 +78,7 @@ export const createProject = async (
  */
 export const getProjects = async (
   userId: string,
-  queryParams: Record<string, any>,
+  queryParams: ProjectQueryParams,
 ): Promise<{
   data: IProject[];
   total: number;
@@ -85,7 +122,7 @@ export const getProjectById = async (projectId: string, userId: string): Promise
   }
 
   // Check if project belongs to user
-  if (project.user.toString() !== userId) {
+  if ((project.user as mongoose.Types.ObjectId).toString() !== userId) {
     throw new ForbiddenError('You do not have permission to access this project');
   }
 
@@ -113,7 +150,7 @@ export const updateProject = async (
   }
 
   // Check if project belongs to user
-  if (project.user.toString() !== userId) {
+  if ((project.user as mongoose.Types.ObjectId).toString() !== userId) {
     throw new ForbiddenError('You do not have permission to update this project');
   }
 
@@ -156,7 +193,7 @@ export const deleteProject = async (
   }
 
   // Check if project belongs to user
-  if (project.user.toString() !== userId) {
+  if ((project.user as mongoose.Types.ObjectId).toString() !== userId) {
     throw new ForbiddenError('You do not have permission to delete this project');
   }
 
@@ -177,7 +214,7 @@ export const deleteProject = async (
  * @param userId User ID
  * @returns Project statistics
  */
-export const getProjectStats = async (projectId: string, userId: string): Promise<any> => {
+export const getProjectStats = async (projectId: string, userId: string): Promise<ProjectStats> => {
   // Find project by ID
   const project = await Project.findById(projectId);
 
@@ -187,7 +224,7 @@ export const getProjectStats = async (projectId: string, userId: string): Promis
   }
 
   // Check if project belongs to user
-  if (project.user.toString() !== userId) {
+  if ((project.user as mongoose.Types.ObjectId).toString() !== userId) {
     throw new ForbiddenError('You do not have permission to access this project');
   }
 
@@ -272,7 +309,7 @@ export const getProjectStats = async (projectId: string, userId: string): Promis
   // Format the results
   return {
     project: {
-      id: project._id,
+      id: (project._id as mongoose.Types.ObjectId).toString(),
       name: project.name,
       description: project.description,
       color: project.color,
